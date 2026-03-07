@@ -1,0 +1,150 @@
+{
+  "version": 10,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 9,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "description": "Base preset",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_C_STANDARD": "17",
+
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+
+        "CMAKE_CXX_FLAGS_DEBUG": "-Wall -Wextra -Wpedantic -Og -g",
+
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-Wall -Wextra -g -O2 -DNDEBUG",
+
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG"
+      },
+      "environment": {},
+      "generator": "Unix Makefiles",
+      "binaryDir": "./build"
+    },
+    {
+      "name": "Debug",
+      "description": "Debug base preset",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "RelWithDebInfo",
+      "inherits": "base",
+      "description": "RelWithDebInfo base preset",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "Release",
+      "inherits": "base",
+      "description": "Release base preset",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "FasterRelease",
+      "inherits": "base",
+      "description": "FasterRelease base preset",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS": "-ffast-math -fno-semantic-interposition -march=native -flto",
+        "CMAKE_C_FLAGS": "-ffast-math -fno-semantic-interposition -march=native -flto"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "cleanFirst": true,
+      "targets": [
+        "all"
+      ],
+      "inheritConfigureEnvironment": true,
+      "jobs": 8
+    },
+    {
+      "name": "Debug",
+      "inherits": "base",
+      "configurePreset": "Debug"
+    },
+    {
+      "name": "RelWithDebInfo",
+      "inherits": "base",
+      "configurePreset": "RelWithDebInfo"
+    },
+    {
+      "name": "Release",
+      "inherits": "base",
+      "configurePreset": "Release"
+    },
+    {
+      "name": "FasterRelease",
+      "inherits": "base",
+      "configurePreset": "FasterRelease"
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "Debug",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "Debug"
+        },
+        {
+          "type": "build",
+          "name": "Debug"
+        }
+      ]
+    },
+    {
+      "name": "RelWithDebInfo",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "RelWithDebInfo"
+        },
+        {
+          "type": "build",
+          "name": "RelWithDebInfo"
+        }
+      ]
+    },
+    {
+      "name": "Release",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "Release"
+        },
+        {
+          "type": "build",
+          "name": "Release"
+        }
+      ]
+    },
+    {
+      "name": "FasterRelease",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "FasterRelease"
+        },
+        {
+          "type": "build",
+          "name": "FasterRelease"
+        }
+      ]
+    }
+  ]
+}
