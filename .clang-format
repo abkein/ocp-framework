@@ -21,7 +21,7 @@ BreakInheritanceList:                 AfterColon
 ColumnLimit:                          150
 IndentCaseLabels:                     true
 IndentWidth:                          2
-NamespaceIndentation:                 Inner
+NamespaceIndentation:                 All
 ObjCBlockIndentWidth:                 2
 PenaltyBreakAssignment:               4
 ReflowComments:                       false
