@@ -7,6 +7,8 @@
 #include <adios2/cxx/IO.h>
 #include <adios2/cxx/Variable.h>
 
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -14,7 +16,14 @@
 #include <string>
 #include <vector>
 
-using size_t = std::size_t;
+using size_t                             = std::size_t;
+
+static constexpr double PI               = 3.141592653589793;
+// static constexpr double ONEoverTHREE     = 1.0 / 3.0;
+// static constexpr double THREEoverFIVE    = 3.0 / 5.0;
+// static constexpr double ONEoverSIX       = 1.0 / 6.0;
+static const double SQRTofTWO_over_THREE = std::sqrt(2.0) / 3.0;
+static const double ONEoverSQRTofTWO     = 1.0 / std::sqrt(2.0);
 
 struct SDInfo {
   double rmax     = -1.0;    // if < 0: use rmaxFrac * min(L)
@@ -74,11 +83,19 @@ struct Options {
 };
 
 struct Box {
-  double xlo, xhi, ylo, yhi, zlo, zhi;
-  [[nodiscard]] double Lx() const { return xhi - xlo; }
-  [[nodiscard]] double Ly() const { return yhi - ylo; }
-  [[nodiscard]] double Lz() const { return zhi - zlo; }
-  [[nodiscard]] double V() const { return Lx() * Ly() * Lz(); }
+  Box() = default;
+  Box(double xlo, double xhi, double ylo, double yhi, double zlo, double zhi) :
+      xlo(xlo), xhi(xhi), ylo(ylo), yhi(yhi), zlo(zlo), zhi(zhi), Lx(xhi - xlo), Ly(yhi - ylo), Lz(zhi - zlo)
+  {
+    V  = Lz * Ly * Lz;
+    cx = xlo + 0.5 * Lx;
+    cy = ylo + 0.5 * Ly;
+    cz = zlo + 0.5 * Lz;
+  }
+  double xlo{}, xhi{}, ylo{}, yhi{}, zlo{}, zhi{};
+  double Lx{}, Ly{}, Lz{};
+  double V{};
+  double cx{}, cy{}, cz{};
 };
 
 struct Application {
@@ -93,7 +110,10 @@ struct Application {
   void run();
   void prepare_data();
   void calculate();
-  void compute_rdf_celllist(const double dr, const size_t nbins);
+  void write();
+  void compute_rdf_celllist();
+  void inscribed();
+  void circumscribed();
 
   SDInfo info{};
 
@@ -117,11 +137,45 @@ struct Application {
 
   std::vector<double> atoms;
   std::vector<double> x, y, z;
+  std::vector<double> fcx, fcy, fcz;
+  std::vector<double> cx1, cy1, cz1;
+  std::vector<double> cx2, cy2, cz2;
+  std::vector<double> cx3, cy3, cz3;
+  std::vector<double> cx4, cy4, cz4;
+  std::vector<double> cx5, cy5, cz5;
+  std::vector<double> cx6, cy6, cz6;
+  std::array<std::array<std::vector<double>*, 3>, 7> vcs = {
+      std::array<std::vector<double>*, 3>({&fcx, &fcy, &fcz}), std::array<std::vector<double>*, 3>({&cx1, &cy1, &cz1}),
+      std::array<std::vector<double>*, 3>({&cx2, &cy2, &cz2}), std::array<std::vector<double>*, 3>({&cx3, &cy3, &cz3}),
+      std::array<std::vector<double>*, 3>({&cx4, &cy4, &cz4}), std::array<std::vector<double>*, 3>({&cx5, &cy5, &cz5}),
+      std::array<std::vector<double>*, 3>({&cx6, &cy6, &cz6})};
+  std::vector<bool> ninside_original;
+  std::vector<bool> ninside1;
+  std::vector<bool> ninside2;
+  std::vector<bool> ninside3;
+  std::vector<bool> ninside4;
+  std::vector<bool> ninside5;
+  std::vector<bool> ninside6;
+  std::array<std::vector<bool>*, 7> ninside = {&ninside_original, &ninside1, &ninside2, &ninside3, &ninside4, &ninside5, &ninside6};
   std::vector<double> counts;
 
   uint64_t timestep = 0;
   size_t N          = 0;
-  Box box{};
+  Box box;
+  double rmax  = 0;
+  size_t nbins = 0;
+  double dr    = 0;
+
+  size_t Ni    = 0;
+  size_t Nc    = 0;
+  size_t Nri    = 0;
+  size_t Nrc    = 0;
+  double upexi = 0;
+  double ubexi = 0;
+  double uci   = 0;
+  double upexc = 0;
+  double ubexc = 0;
+  double ucc   = 0;
 };
 
 namespace COLS {
@@ -147,9 +201,9 @@ struct CenterOfMass {
       y += sfy[i];
       z += sfz[i];
     }
-    x *= box.Lx() / static_cast<double>(N);
-    y *= box.Ly() / static_cast<double>(N);
-    z *= box.Lz() / static_cast<double>(N);
+    x *= box.Lx / static_cast<double>(N);
+    y *= box.Ly / static_cast<double>(N);
+    z *= box.Lz / static_cast<double>(N);
   }
 };
 

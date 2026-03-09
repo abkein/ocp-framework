@@ -72,12 +72,15 @@ void Application::prepare_data()
   uint64_t natoms{};
   reader.Get(vNatoms, natoms);
   N = static_cast<size_t>(natoms);
-  reader.Get(vXlo, box.xlo);
-  reader.Get(vXhi, box.xhi);
-  reader.Get(vYlo, box.ylo);
-  reader.Get(vYhi, box.yhi);
-  reader.Get(vZlo, box.zlo);
-  reader.Get(vZhi, box.zhi);
+  double xlo{}, xhi{}, ylo{}, yhi{}, zlo{}, zhi{};
+  reader.Get(vXlo, xlo);
+  reader.Get(vXhi, xhi);
+  reader.Get(vYlo, ylo);
+  reader.Get(vYhi, yhi);
+  reader.Get(vZlo, zlo);
+  reader.Get(vZhi, zhi);
+
+  box = Box(xlo, xhi, ylo, yhi, zlo, zhi);
 
   // atoms shape is per-step. We rely on natoms (scalar) and ncolumns=5.
   // Select [0..N) x [0..NUM_COLS)
@@ -92,10 +95,6 @@ void Application::prepare_data()
   y.resize(N);
   z.resize(N);
 
-  const double Lx = box.Lx();
-  const double Ly = box.Ly();
-  const double Lz = box.Lz();
-
   // columns: [id, type, x, y, z]
   if (scaled != 0) {
     // cx,cy,cz are fractional (0..1)
@@ -104,9 +103,9 @@ void Application::prepare_data()
       const double cy = atoms[i * COLS::NUM_COLS + COLS::Y];
       const double cz = atoms[i * COLS::NUM_COLS + COLS::Z];
 
-      x[i]            = box.xlo + cx * Lx;
-      y[i]            = box.ylo + cy * Ly;
-      z[i]            = box.zlo + cz * Lz;
+      x[i]            = box.xlo + cx * box.Lx;
+      y[i]            = box.ylo + cy * box.Ly;
+      z[i]            = box.zlo + cz * box.Lz;
     }
   } else {
     // cx,cy,cz are real coordinates; wrap into box for consistency
@@ -116,27 +115,204 @@ void Application::prepare_data()
       z[i] = atoms[i * COLS::NUM_COLS + COLS::Z];
     }
   }
+  ninside_original.assign(N, true);
+}
+
+void Application::inscribed()
+{
+  Ni               = static_cast<size_t>(PI * static_cast<double>(N) * (1.0 / 6.0));
+  const double Rsq = 0.5 * 0.5 * (box.Lx * box.Lx + box.Ly * box.Ly + box.Lz * box.Lz);
+
+  Nri              = 0;
+  upexi            = 0;
+  ubexi            = 0;
+
+  for (size_t i = 0; i < N; ++i) {
+    const double risq = fcx[i] * fcx[i] + fcy[i] * fcy[i] + fcz[i] * fcz[i];
+    ubexi += risq;
+    if (risq > Rsq) { continue; }
+    ++Nri;
+    for (size_t j = i; j < N; ++j) {
+      const double rjsq = fcx[j] * fcx[j] + fcy[j] * fcy[j] + fcz[j] * fcz[j];
+      if (rjsq > Rsq) { continue; }
+      const double dx  = x[i] - x[j];
+      const double dy  = y[i] - y[j];
+      const double dz  = z[i] - z[j];
+      const double rij = std::sqrt(dx * dx + dy * dy + dz * dz);
+      upexi += 1.0 / rij;
+    }
+  }
+
+  uci = std::pow(Nri * Nri, (1.0 / 3.0)) * (3.0 / 5.0);
+  upexi /= static_cast<double>(Nri);
+  ubexi /= static_cast<double>(Nri);
+  ubexi *= 0.5;
+}
+
+void Application::circumscribed()
+{
+  Nc               = static_cast<size_t>(PI * static_cast<double>(N) * SQRTofTWO_over_THREE);
+  const double Rsq = 0.5 * (box.Lx * box.Lx + box.Ly * box.Ly + box.Lz * box.Lz);
+
+  Nrc              = 0;
+  ninside1.assign(N, true);
+  cx1.reserve(N);
+  cy1.reserve(N);
+  cz1.reserve(N);
+  for (size_t i = 0; i < N; ++i) {
+    const double cxi      = fcx[i] - box.Lx;
+    const double distance = cxi * cxi + fcy[i] * fcy[i] + fcz[i] * fcz[i];
+    ninside1[i]           = distance > Rsq;
+    if (!ninside1[i]) {
+      cx1[i] = cxi;
+      cy1[i] = fcy[i];
+      cz1[i] = fcz[i];
+    }
+  }
+
+  ninside2.assign(N, true);
+  cx2.reserve(N);
+  cy2.reserve(N);
+  cz2.reserve(N);
+  for (size_t i = 0; i < N; ++i) {
+    const double cxi      = fcx[i] + box.Lx;
+    const double distance = cxi * cxi + fcy[i] * fcy[i] + fcz[i] * fcz[i];
+    ninside2[i]           = distance > Rsq;
+    if (!ninside2[i]) {
+      cx2[i] = cxi;
+      cy2[i] = fcy[i];
+      cz2[i] = fcz[i];
+    }
+  }
+
+  ninside3.assign(N, true);
+  cx3.reserve(N);
+  cy3.reserve(N);
+  cz3.reserve(N);
+  for (size_t i = 0; i < N; ++i) {
+    const double cyi      = fcy[i] - box.Ly;
+    const double distance = fcx[i] * fcx[i] + cyi * cyi + fcz[i] * fcz[i];
+    ninside3[i]           = distance > Rsq;
+    if (!ninside3[i]) {
+      cx3[i] = fcx[i];
+      cy3[i] = cyi;
+      cz3[i] = fcz[i];
+    }
+  }
+
+  ninside4.assign(N, true);
+  cx4.reserve(N);
+  cy4.reserve(N);
+  cz4.reserve(N);
+  for (size_t i = 0; i < N; ++i) {
+    const double cyi      = fcy[i] + box.Ly;
+    const double distance = fcx[i] * fcx[i] + cyi * cyi + fcz[i] * fcz[i];
+    ninside4[i]           = distance > Rsq;
+    if (!ninside4[i]) {
+      cx4[i] = fcx[i];
+      cy4[i] = cyi;
+      cz4[i] = fcz[i];
+    }
+  }
+
+  ninside5.assign(N, true);
+  cx5.reserve(N);
+  cy5.reserve(N);
+  cz5.reserve(N);
+  for (size_t i = 0; i < N; ++i) {
+    const double czi      = fcz[i] - box.Lz;
+    const double distance = fcx[i] * fcx[i] + fcy[i] * fcy[i] + czi * czi;
+    ninside5[i]           = distance > Rsq;
+    if (!ninside5[i]) {
+      cx5[i] = fcx[i];
+      cy5[i] = fcy[i];
+      cz5[i] = czi;
+    }
+  }
+
+  ninside6.assign(N, true);
+  cx6.reserve(N);
+  cy6.reserve(N);
+  cz6.reserve(N);
+  for (size_t i = 0; i < N; ++i) {
+    const double czi      = fcz[i] + box.Lz;
+    const double distance = fcx[i] * fcx[i] + fcy[i] * fcy[i] + czi * czi;
+    ninside6[i]           = distance > Rsq;
+    if (!ninside6[i]) {
+      cx5[i] = fcx[i];
+      cy5[i] = fcy[i];
+      cz5[i] = czi;
+    }
+  }
+
+  upexc = 0;
+  ubexc = 0;
+
+  for (int imgi = 0; imgi < 7; ++imgi) {
+    const std::vector<bool>& i_ninside = *(ninside[imgi]);
+    const std::vector<double>& ximgi   = *(vcs[imgi][0]);
+    const std::vector<double>& yimgi   = *(vcs[imgi][1]);
+    const std::vector<double>& zimgi   = *(vcs[imgi][2]);
+    for (size_t i = 0; i < N; ++i) {
+      if (i_ninside[i]) { continue; }
+      ++Nrc;
+      const double xi   = ximgi[i];
+      const double yi   = yimgi[i];
+      const double zi   = zimgi[i];
+      const double risq = xi * xi + yi * yi + zi * zi;
+      ubexc += risq;
+      for (int imgj = 0; imgj < 7; ++imgj) {
+        const std::vector<bool>& j_ninside = *(ninside[imgj]);
+        const std::vector<double>& ximgj   = *(vcs[imgj][0]);
+        const std::vector<double>& yimgj   = *(vcs[imgj][1]);
+        const std::vector<double>& zimgj   = *(vcs[imgj][2]);
+        for (size_t j = i; j < N; ++j) {
+          if (j_ninside[j]) { continue; }
+          const double dx  = xi - ximgj[j];
+          const double dy  = yi - yimgj[j];
+          const double dz  = zi - zimgj[j];
+          const double rij = std::sqrt(dx * dx + dy * dy + dz * dz);
+          upexc += 1.0 / rij;
+        }
+      }
+    }
+  }
+
+  ucc = std::pow(Nrc * Nrc, (1.0 / 3.0)) * (3.0 / 5.0);
+  upexc /= static_cast<double>(Nrc);
+  ubexc /= static_cast<double>(Nrc);
+  ubexc *= 0.5;
 }
 
 void Application::calculate()
 {
-  const double Lx = box.Lx();
-  const double Ly = box.Ly();
-  const double Lz = box.Lz();
+  fcx.reserve(N);
+  for (size_t i = 0; i < N; ++i) { fcx[i] = x[i] - box.cx; }
+  fcy.reserve(N);
+  for (size_t i = 0; i < N; ++i) { fcy[i] = y[i] - box.cy; }
+  fcz.reserve(N);
+  for (size_t i = 0; i < N; ++i) { fcz[i] = z[i] - box.cz; }
 
-  double rmax     = info.rmax;
-  if (rmax <= 0.0) { rmax = info.rmaxFrac * std::sqrt(Lx * Lx + Ly * Ly + Lz * Lz); }
+  rmax = info.rmax;
+  if (rmax <= 0.0) {
+    rmax = info.rmaxFrac * std::sqrt(box.Lx * box.Lx + box.Ly * box.Ly + box.Lz * box.Lz) * 0.5;
+  }    // 0.5 b/c diameter to radius conversion
 
   // enforce safe maximum for minimum-image RDF
-  rmax             = std::min(rmax, 0.5 * std::min({Lx, Ly, Lz}));
+  rmax  = std::min(rmax, 0.5 * std::min({box.Lx, box.Ly, box.Lz}));
 
-  const auto nbins = static_cast<size_t>(rmax / info.dr);
-  const double dr  = rmax / static_cast<double>(nbins);
+  nbins = static_cast<size_t>(rmax / info.dr);
+  dr    = rmax / static_cast<double>(nbins);
 
-  obs << timestep << "," << N << "," << box.V() << "," << rmax << "," << dr << "," << nbins << "\n";
+  compute_rdf_celllist();
+  inscribed();
+  circumscribed();
+}
 
-  compute_rdf_celllist(dr, nbins);
-
+void Application::write()
+{
+  obs << timestep << "," << N << "," << box.V << "," << rmax << "," << dr << "," << nbins << "," << Ni << "," << Nri << "," << upexi << "," << ubexi
+      << "," << uci << "," << Nc << "," << Nrc << "," << upexc << "," << ubexc << "," << ucc << "\n";
   rdf << timestep << ",";
   for (size_t i = 0; i < nbins; ++i) { rdf << "," << counts[i] << "\n"; }
 }
@@ -150,24 +326,22 @@ void Application::run()
     prepare_data();
 
     calculate();
+    write();
   }
 }
 
-void Application::compute_rdf_celllist(const double dr, const size_t nbins)
+void Application::compute_rdf_celllist()
 {
   counts.resize(nbins);
   counts.assign(nbins, 0);
   if (N < 2) { return; }
   if (dr <= 0.0) { return; }
-  const double Lx = box.Lx();
-  const double Ly = box.Ly();
-  const double Lz = box.Lz();
 
   for (size_t i = 0; i < N - 1; ++i) {
     for (size_t j = i; j < N; ++j) {
-      const double dx       = min_image(x[i] - x[j], Lx);
-      const double dy       = min_image(y[i] - y[j], Ly);
-      const double dz       = min_image(z[i] - z[j], Lz);
+      const double dx       = min_image(x[i] - x[j], box.Lx);
+      const double dy       = min_image(y[i] - y[j], box.Ly);
+      const double dz       = min_image(z[i] - z[j], box.Lz);
       const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
       const auto ibin       = static_cast<size_t>(distance / dr);    // floor
       if (ibin >= nbins) { continue; }
