@@ -1,7 +1,6 @@
 #ifndef ANALYZE_LAMMPS_ADIOS_H
 #define ANALYZE_LAMMPS_ADIOS_H
 
-// #include <adios2/common/ADIOSTypes.h>
 #include <adios2/cxx/ADIOS.h>
 #include <adios2/cxx/Engine.h>
 #include <adios2/cxx/IO.h>
@@ -25,19 +24,19 @@ static const double ONEoverSQRTofTWO     = 1.0 / std::sqrt(2.0);
 struct SDInfo {
   double rmax     = -1.0;    // if < 0: use rmaxFrac * min(L)
   double rmaxFrac = 0.5;     // default: min(L)/2
-  double dr       = -1.0;    // if < 0: use rmax
+  double dr       = -1.0;    //
 };
 
 struct Options {
   Options(int argc, char** argv)
   {
-    if (argc < 2) {
-      throw std::runtime_error("Usage: analyze_lammps_adios <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
-                               "                                      [--rmax 0.0] [--rmax-frac 0.5] [--dr 0.0]\n"
-                               "                                      [--obs-out observables.csv] [--rdf-out rdf.csv]\n");
-    }
+    const std::string usage    = "Usage: analyze_lammps_adios <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
+                                 "                                      [--rmax 0.0] [--rmax-frac 0.5] --dr 0.0\n"
+                                 "                                      [--obs-out observables.csv] [--rdf-out rdf.csv]\n";
+    const std::string firstarg = argv[1];
+    if ((argc < 3) || (firstarg == "--help") || (firstarg == "-h")) { throw std::runtime_error(usage); }
 
-    bpFile = argv[1];
+    bpFile = firstarg;
 
     for (int i = 2; i < argc; ++i) {
       const std::string a = argv[i];
@@ -165,8 +164,8 @@ struct Application {
 
   size_t Ni    = 0;
   size_t Nc    = 0;
-  size_t Nri    = 0;
-  size_t Nrc    = 0;
+  size_t Nri   = 0;
+  size_t Nrc   = 0;
   double upexi = 0;
   double ubexi = 0;
   double uci   = 0;
