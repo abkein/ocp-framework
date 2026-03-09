@@ -27,6 +27,7 @@ namespace {
 
 Application::Application(const Options& opt)
 {
+  info   = opt.info;
   adios  = adios2::ADIOS(opt.adiosConfig);
   io     = adios.DeclareIO(opt.ioName);
 
@@ -42,7 +43,7 @@ Application::Application(const Options& opt)
   // Output files
   obs = std::ofstream(opt.obsOut);
   if (!obs) { throw std::runtime_error("Cannot open " + opt.obsOut); }
-  obs << "timestep,N,V,rmax,dr,nbins\n";
+  obs << "timestep,N,V,rmax,dr,nbins,Ni,Nri,upexi,ubexi,uci,Nc,Nrc,upexc,ubexc,ucc\n";
 
   rdf = std::ofstream(opt.rdfOut);
   if (!rdf) { throw std::runtime_error("Cannot open " + opt.rdfOut); }
@@ -132,15 +133,23 @@ void Application::inscribed()
     ubexi += risq;
     if (risq > Rsq) { continue; }
     ++Nri;
-    for (size_t j = i; j < N; ++j) {
+    for (size_t j = i + 1; j < N; ++j) {
       const double rjsq = fcx[j] * fcx[j] + fcy[j] * fcy[j] + fcz[j] * fcz[j];
       if (rjsq > Rsq) { continue; }
       const double dx  = x[i] - x[j];
       const double dy  = y[i] - y[j];
       const double dz  = z[i] - z[j];
       const double rij = std::sqrt(dx * dx + dy * dy + dz * dz);
+      if (rij == 0.0) { continue; }
       upexi += 1.0 / rij;
     }
+  }
+
+  if (Nri == 0) {
+    uci   = 0.0;
+    upexi = 0.0;
+    ubexi = 0.0;
+    return;
   }
 
   uci = std::pow(Nri * Nri, (1.0 / 3.0)) * (3.0 / 5.0);
@@ -156,9 +165,9 @@ void Application::circumscribed()
 
   Nrc              = 0;
   ninside1.assign(N, true);
-  cx1.reserve(N);
-  cy1.reserve(N);
-  cz1.reserve(N);
+  cx1.resize(N);
+  cy1.resize(N);
+  cz1.resize(N);
   for (size_t i = 0; i < N; ++i) {
     const double cxi      = fcx[i] - box.Lx;
     const double distance = cxi * cxi + fcy[i] * fcy[i] + fcz[i] * fcz[i];
@@ -171,9 +180,9 @@ void Application::circumscribed()
   }
 
   ninside2.assign(N, true);
-  cx2.reserve(N);
-  cy2.reserve(N);
-  cz2.reserve(N);
+  cx2.resize(N);
+  cy2.resize(N);
+  cz2.resize(N);
   for (size_t i = 0; i < N; ++i) {
     const double cxi      = fcx[i] + box.Lx;
     const double distance = cxi * cxi + fcy[i] * fcy[i] + fcz[i] * fcz[i];
@@ -186,9 +195,9 @@ void Application::circumscribed()
   }
 
   ninside3.assign(N, true);
-  cx3.reserve(N);
-  cy3.reserve(N);
-  cz3.reserve(N);
+  cx3.resize(N);
+  cy3.resize(N);
+  cz3.resize(N);
   for (size_t i = 0; i < N; ++i) {
     const double cyi      = fcy[i] - box.Ly;
     const double distance = fcx[i] * fcx[i] + cyi * cyi + fcz[i] * fcz[i];
@@ -201,9 +210,9 @@ void Application::circumscribed()
   }
 
   ninside4.assign(N, true);
-  cx4.reserve(N);
-  cy4.reserve(N);
-  cz4.reserve(N);
+  cx4.resize(N);
+  cy4.resize(N);
+  cz4.resize(N);
   for (size_t i = 0; i < N; ++i) {
     const double cyi      = fcy[i] + box.Ly;
     const double distance = fcx[i] * fcx[i] + cyi * cyi + fcz[i] * fcz[i];
@@ -216,9 +225,9 @@ void Application::circumscribed()
   }
 
   ninside5.assign(N, true);
-  cx5.reserve(N);
-  cy5.reserve(N);
-  cz5.reserve(N);
+  cx5.resize(N);
+  cy5.resize(N);
+  cz5.resize(N);
   for (size_t i = 0; i < N; ++i) {
     const double czi      = fcz[i] - box.Lz;
     const double distance = fcx[i] * fcx[i] + fcy[i] * fcy[i] + czi * czi;
@@ -231,17 +240,17 @@ void Application::circumscribed()
   }
 
   ninside6.assign(N, true);
-  cx6.reserve(N);
-  cy6.reserve(N);
-  cz6.reserve(N);
+  cx6.resize(N);
+  cy6.resize(N);
+  cz6.resize(N);
   for (size_t i = 0; i < N; ++i) {
     const double czi      = fcz[i] + box.Lz;
     const double distance = fcx[i] * fcx[i] + fcy[i] * fcy[i] + czi * czi;
     ninside6[i]           = distance > Rsq;
     if (!ninside6[i]) {
-      cx5[i] = fcx[i];
-      cy5[i] = fcy[i];
-      cz5[i] = czi;
+      cx6[i] = fcx[i];
+      cy6[i] = fcy[i];
+      cz6[i] = czi;
     }
   }
 
@@ -272,10 +281,18 @@ void Application::circumscribed()
           const double dy  = yi - yimgj[j];
           const double dz  = zi - zimgj[j];
           const double rij = std::sqrt(dx * dx + dy * dy + dz * dz);
+          if (rij == 0.0) { continue; }
           upexc += 1.0 / rij;
         }
       }
     }
+  }
+
+  if (Nrc == 0) {
+    ucc   = 0.0;
+    upexc = 0.0;
+    ubexc = 0.0;
+    return;
   }
 
   ucc = std::pow(Nrc * Nrc, (1.0 / 3.0)) * (3.0 / 5.0);
@@ -286,11 +303,11 @@ void Application::circumscribed()
 
 void Application::calculate()
 {
-  fcx.reserve(N);
+  fcx.resize(N);
   for (size_t i = 0; i < N; ++i) { fcx[i] = x[i] - box.cx; }
-  fcy.reserve(N);
+  fcy.resize(N);
   for (size_t i = 0; i < N; ++i) { fcy[i] = y[i] - box.cy; }
-  fcz.reserve(N);
+  fcz.resize(N);
   for (size_t i = 0; i < N; ++i) { fcz[i] = z[i] - box.cz; }
 
   rmax = info.rmax;
@@ -301,7 +318,10 @@ void Application::calculate()
   // enforce safe maximum for minimum-image RDF
   rmax  = std::min(rmax, 0.5 * std::min({box.Lx, box.Ly, box.Lz}));
 
-  nbins = static_cast<size_t>(rmax / info.dr);
+  if (rmax <= 0.0) { throw std::runtime_error("Computed rmax must be > 0."); }
+  dr = info.dr;
+  if (dr <= 0.0) { dr = rmax; }
+  nbins = std::max<size_t>(1, static_cast<size_t>(std::ceil(rmax / dr)));
   dr    = rmax / static_cast<double>(nbins);
 
   compute_rdf_celllist();
@@ -313,8 +333,9 @@ void Application::write()
 {
   obs << timestep << "," << N << "," << box.V << "," << rmax << "," << dr << "," << nbins << "," << Ni << "," << Nri << "," << upexi << "," << ubexi
       << "," << uci << "," << Nc << "," << Nrc << "," << upexc << "," << ubexc << "," << ucc << "\n";
-  rdf << timestep << ",";
-  for (size_t i = 0; i < nbins; ++i) { rdf << "," << counts[i] << "\n"; }
+  rdf << timestep;
+  for (size_t i = 0; i < nbins; ++i) { rdf << "," << counts[i]; }
+  rdf << "\n";
 }
 
 void Application::run()
@@ -338,7 +359,7 @@ void Application::compute_rdf_celllist()
   if (dr <= 0.0) { return; }
 
   for (size_t i = 0; i < N - 1; ++i) {
-    for (size_t j = i; j < N; ++j) {
+    for (size_t j = i + 1; j < N; ++j) {
       const double dx       = min_image(x[i] - x[j], box.Lx);
       const double dy       = min_image(y[i] - y[j], box.Ly);
       const double dz       = min_image(z[i] - z[j], box.Lz);

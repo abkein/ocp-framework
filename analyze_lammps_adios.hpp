@@ -19,9 +19,6 @@
 using size_t                             = std::size_t;
 
 static constexpr double PI               = 3.141592653589793;
-// static constexpr double ONEoverTHREE     = 1.0 / 3.0;
-// static constexpr double THREEoverFIVE    = 3.0 / 5.0;
-// static constexpr double ONEoverSIX       = 1.0 / 6.0;
 static const double SQRTofTWO_over_THREE = std::sqrt(2.0) / 3.0;
 static const double ONEoverSQRTofTWO     = 1.0 / std::sqrt(2.0);
 
@@ -36,7 +33,7 @@ struct Options {
   {
     if (argc < 2) {
       throw std::runtime_error("Usage: analyze_lammps_adios <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
-                               "                                      [--rmax 0.0] [--rmax-frac 0.5] [--cell-size 0.0]\n"
+                               "                                      [--rmax 0.0] [--rmax-frac 0.5] [--dr 0.0]\n"
                                "                                      [--obs-out observables.csv] [--rdf-out rdf.csv]\n");
     }
 
@@ -87,7 +84,7 @@ struct Box {
   Box(double xlo, double xhi, double ylo, double yhi, double zlo, double zhi) :
       xlo(xlo), xhi(xhi), ylo(ylo), yhi(yhi), zlo(zlo), zhi(zhi), Lx(xhi - xlo), Ly(yhi - ylo), Lz(zhi - zlo)
   {
-    V  = Lz * Ly * Lz;
+    V  = Lx * Ly * Lz;
     cx = xlo + 0.5 * Lx;
     cy = ylo + 0.5 * Ly;
     cz = zlo + 0.5 * Lz;
