@@ -91,7 +91,7 @@ struct Box {
   double xlo{}, xhi{}, ylo{}, yhi{}, zlo{}, zhi{};
   double Lx{}, Ly{}, Lz{};
   double V{};
-  double cx{}, cy{}, cz{};
+  double cx{}, cy{}, cz{};    // box center, therefore center of inscribed/circumscribed spheres
 };
 
 struct Application {
@@ -116,7 +116,7 @@ struct Application {
   adios2::ADIOS adios;
   adios2::IO io;
   adios2::Engine reader;
-  int32_t scaled    = 0;
+  int32_t scaled    = 0;    // 0 if coordinates are dimensional (real); 1 if dimensionless — x->x/Lx, y->y/Ly, z->z/Lz
   int32_t triclinic = 0;
   std::ofstream obs;
   std::ofstream rdf;
@@ -132,46 +132,47 @@ struct Application {
   adios2::Variable<double> vZhi;
 
   std::vector<double> atoms;
-  std::vector<double> x, y, z;
-  std::vector<double> fcx, fcy, fcz;
-  std::vector<double> cx1, cy1, cz1;
-  std::vector<double> cx2, cy2, cz2;
-  std::vector<double> cx3, cy3, cz3;
-  std::vector<double> cx4, cy4, cz4;
-  std::vector<double> cx5, cy5, cz5;
-  std::vector<double> cx6, cy6, cz6;
+  std::vector<double> x, y, z;          // raw dimensional coordinates
+  std::vector<double> fcx, fcy, fcz;    // atom dimensional coordinates relative to the cell center
+  std::vector<double> cx1, cy1, cz1;    // same as fc, but for image x->x-Lx
+  std::vector<double> cx2, cy2, cz2;    // same as fc, but for image x->x+Lx
+  std::vector<double> cx3, cy3, cz3;    // same as fc, but for image y->y-Ly
+  std::vector<double> cx4, cy4, cz4;    // same as fc, but for image y->y+Ly
+  std::vector<double> cx5, cy5, cz5;    // same as fc, but for image z->z-Lz
+  std::vector<double> cx6, cy6, cz6;    // same as fc, but for image z->z+Lz
   std::array<std::array<std::vector<double>*, 3>, 7> vcs = {
       std::array<std::vector<double>*, 3>({&fcx, &fcy, &fcz}), std::array<std::vector<double>*, 3>({&cx1, &cy1, &cz1}),
       std::array<std::vector<double>*, 3>({&cx2, &cy2, &cz2}), std::array<std::vector<double>*, 3>({&cx3, &cy3, &cz3}),
       std::array<std::vector<double>*, 3>({&cx4, &cy4, &cz4}), std::array<std::vector<double>*, 3>({&cx5, &cy5, &cz5}),
-      std::array<std::vector<double>*, 3>({&cx6, &cy6, &cz6})};
-  std::vector<bool> ninside_original;
-  std::vector<bool> ninside1;
-  std::vector<bool> ninside2;
-  std::vector<bool> ninside3;
-  std::vector<bool> ninside4;
-  std::vector<bool> ninside5;
-  std::vector<bool> ninside6;
-  std::array<std::vector<bool>*, 7> ninside = {&ninside_original, &ninside1, &ninside2, &ninside3, &ninside4, &ninside5, &ninside6};
-  std::vector<double> counts;
+      std::array<std::vector<double>*, 3>({&cx6, &cy6, &cz6})};    // for convinience of iteration
+  std::vector<bool> ninside_original;                              // ninside[i] == false -> inside; whether atom is inside circumscribed sphere
+  std::vector<bool> ninside1;    // ninside[i] == false -> inside; whether image x->x-Lx is inside circumscribed sphere
+  std::vector<bool> ninside2;    // ninside[i] == false -> inside; whether image x->x+Lx is inside circumscribed sphere
+  std::vector<bool> ninside3;    // ninside[i] == false -> inside; whether image y->y-Ly is inside circumscribed sphere
+  std::vector<bool> ninside5;    // ninside[i] == false -> inside; whether image y->y+Ly is inside circumscribed sphere
+  std::vector<bool> ninside4;    // ninside[i] == false -> inside; whether image z->z-Lz is inside circumscribed sphere
+  std::vector<bool> ninside6;    // ninside[i] == false -> inside; whether image z->z+Lz is inside circumscribed sphere
+  std::array<std::vector<bool>*, 7> ninside = {&ninside_original, &ninside1, &ninside2, &ninside3,
+                                               &ninside4,         &ninside5, &ninside6};    // for convinience of iteration
+  std::vector<double> counts;    // radial distribution function (rdf), but only raw counts, unnormalized
 
   uint64_t timestep = 0;
-  size_t N          = 0;
-  Box box;
-  double rmax  = 0;
-  size_t nbins = 0;
-  double dr    = 0;
+  size_t N          = 0;    // atom number in cell
+  Box box;                  // cell
+  double rmax  = 0;         // max distance to calculate rdf
+  size_t nbins = 0;         // number of bins for rdf
+  double dr    = 0;         // bin width
 
-  size_t Ni    = 0;
-  size_t Nc    = 0;
-  size_t Nri   = 0;
-  size_t Nrc   = 0;
-  double upexi = 0;
-  double ubexi = 0;
-  double uci   = 0;
-  double upexc = 0;
-  double ubexc = 0;
-  double ucc   = 0;
+  size_t Ni    = 0;    // number of atoms inside inscribed sphere, calculated from geometry
+  size_t Nri   = 0;    // number of atoms inside inscribed sphere, counted from dataa
+  size_t Nc    = 0;    // number of atoms inside circumscribed sphere, calculated from geometry
+  size_t Nrc   = 0;    // number of atoms inside circumscribed sphere, counted from dataa
+  double upexi = 0;    // energies for inscribed sphere
+  double ubexi = 0;    // energies for inscribed sphere
+  double uci   = 0;    // energies for inscribed sphere
+  double upexc = 0;    // energies for circumscribed sphere
+  double ubexc = 0;    // energies for circumscribed sphere
+  double ucc   = 0;    // energies for circumscribed sphere
 };
 
 namespace COLS {

@@ -98,7 +98,7 @@ void Application::prepare_data()
 
   // columns: [id, type, x, y, z]
   if (scaled != 0) {
-    // cx,cy,cz are fractional (0..1)
+    // cx,cy,cz are fractional (0..1), we need real
     for (size_t i = 0; i < N; ++i) {
       const double cx = atoms[i * COLS::NUM_COLS + COLS::X];
       const double cy = atoms[i * COLS::NUM_COLS + COLS::Y];
@@ -130,8 +130,8 @@ void Application::inscribed()
 
   for (size_t i = 0; i < N; ++i) {
     const double risq = fcx[i] * fcx[i] + fcy[i] * fcy[i] + fcz[i] * fcz[i];
-    ubexi += risq;
     if (risq > Rsq) { continue; }
+    ubexi += risq;
     ++Nri;
     for (size_t j = i + 1; j < N; ++j) {
       const double rjsq = fcx[j] * fcx[j] + fcy[j] * fcy[j] + fcz[j] * fcz[j];
@@ -152,9 +152,12 @@ void Application::inscribed()
     return;
   }
 
-  uci = std::pow(Nri * Nri, (1.0 / 3.0)) * (3.0 / 5.0);
+  uci = std::pow(static_cast<double>(Nri * Nri), (1.0 / 3.0)) * (3.0 / 5.0);
   upexi /= static_cast<double>(Nri);
+  upexi -= uci;
+
   ubexi /= static_cast<double>(Nri);
+  ubexi -= uci;
   ubexi *= 0.5;
 }
 
@@ -295,14 +298,18 @@ void Application::circumscribed()
     return;
   }
 
-  ucc = std::pow(Nrc * Nrc, (1.0 / 3.0)) * (3.0 / 5.0);
+  ucc = std::pow(static_cast<double>(Nrc * Nrc), (1.0 / 3.0)) * (3.0 / 5.0);
   upexc /= static_cast<double>(Nrc);
+  upexc -= ucc;
+
   ubexc /= static_cast<double>(Nrc);
+  ubexc -= ucc;
   ubexc *= 0.5;
 }
 
 void Application::calculate()
 {
+  // get atom coordinates relative to the cell center
   fcx.resize(N);
   for (size_t i = 0; i < N; ++i) { fcx[i] = x[i] - box.cx; }
   fcy.resize(N);
