@@ -6,6 +6,7 @@
 #include <adios2/cxx/IO.h>
 #include <adios2/cxx/Variable.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -18,8 +19,8 @@
 using size_t                             = std::size_t;
 
 static constexpr double PI               = 3.141592653589793;
-static const double SQRTofTWO_over_THREE = std::sqrt(2.0) / 3.0;
-static const double ONEoverSQRTofTWO     = 1.0 / std::sqrt(2.0);
+static const double SQRTofTHREE_over_TWO = 0.5 * std ::sqrt(2.0);
+// static const double ONEoverSQRTofTWO     = 1.0 / std::sqrt(2.0);
 
 struct SDInfo {
   double rmax     = -1.0;    // if < 0: use rmaxFrac * min(L)
@@ -30,11 +31,13 @@ struct SDInfo {
 struct Options {
   Options(int argc, char** argv)
   {
-    const std::string usage    = "Usage: analyze_lammps_adios <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
-                                 "                                      [--rmax 0.0] [--rmax-frac 0.5] --dr 0.0\n"
-                                 "                                      [--obs-out observables.csv] [--rdf-out rdf.csv]\n";
+    const std::string usage = "Usage: analyze_lammps_adios <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
+                              "                                      [--obs-out observables.csv] [--rdf-out rdf.csv]\n"
+                              "                                      [--rdf dr] [--rmax 0.0] [--rmax-frac 0.5]\n"
+                              "                                      [-i] [-c]\n";
+    if (argc < 2) { throw std::runtime_error(usage); }
     const std::string firstarg = argv[1];
-    if ((argc < 3) || (firstarg == "--help") || (firstarg == "-h")) { throw std::runtime_error(usage); }
+    if ((firstarg == "--help") || (firstarg == "-h")) { throw std::runtime_error(usage); }
 
     bpFile = firstarg;
 
@@ -46,30 +49,40 @@ struct Options {
         ioName = need_value(argc, argv, i);
       } else if (a == "--rmax") {
         info.rmax = std::stod(need_value(argc, argv, i));
+        if (info.rmax <= 0.0) { throw std::runtime_error("--rmax must be > 0"); }
       } else if (a == "--rmax-frac") {
         info.rmaxFrac = std::stod(need_value(argc, argv, i));
-      } else if (a == "--dr") {
-        info.dr = std::stod(need_value(argc, argv, i));
+        if (info.rmaxFrac <= 0.0) { throw std::runtime_error("--rmax-frac must be > 0"); }
+      } else if (a == "--rdf") {
+        calculate_rdf = true;
+        info.dr       = std::stod(need_value(argc, argv, i));
+        if (info.dr <= 0.0) { throw std::runtime_error("dr must be > 0"); }
       } else if (a == "--obs-out") {
         obsOut = need_value(argc, argv, i);
       } else if (a == "--rdf-out") {
         rdfOut = need_value(argc, argv, i);
+      } else if (a == "-i") {
+        calculate_inscribed = true;
+      } else if (a == "-c") {
+        calculate_circumscribed = true;
       } else {
         throw std::runtime_error("Unknown argument: " + a);
       }
     }
-
-    if (info.rmaxFrac <= 0.0) { throw std::runtime_error("--rmax-frac must be > 0"); }
   }
-
-  std::string bpFile;
-  std::string adiosConfig = "adios2_config.xml";
-  std::string ioName      = "read_dump";
 
   SDInfo info{};
 
-  std::string obsOut = "observables.csv";
-  std::string rdfOut = "rdf.csv";
+  std::string bpFile;
+  std::string adiosConfig      = "adios2_config.xml";
+  std::string ioName           = "read_dump";
+
+  std::string obsOut           = "observables.csv";
+  std::string rdfOut           = "rdf.csv";
+
+  bool calculate_rdf           = false;
+  bool calculate_inscribed     = false;
+  bool calculate_circumscribed = false;
 
   [[nodiscard]] static std::string need_value(int argc, const char* const* const argv, int& i)
   {
@@ -80,18 +93,22 @@ struct Options {
 
 struct Box {
   Box() = default;
-  Box(double xlo, double xhi, double ylo, double yhi, double zlo, double zhi) :
+  constexpr Box(double xlo, double xhi, double ylo, double yhi, double zlo, double zhi) :
       xlo(xlo), xhi(xhi), ylo(ylo), yhi(yhi), zlo(zlo), zhi(zhi), Lx(xhi - xlo), Ly(yhi - ylo), Lz(zhi - zlo)
   {
-    V  = Lx * Ly * Lz;
-    cx = xlo + 0.5 * Lx;
-    cy = ylo + 0.5 * Ly;
-    cz = zlo + 0.5 * Lz;
+    V         = Lx * Ly * Lz;
+    cx        = xlo + 0.5 * Lx;
+    cy        = ylo + 0.5 * Ly;
+    cz        = zlo + 0.5 * Lz;
+    L_average = (Lx + Ly + Lz) * (1.0 / 3.0);
+    L_min     = std::min({Lx, Ly, Lz});
   }
   double xlo{}, xhi{}, ylo{}, yhi{}, zlo{}, zhi{};
   double Lx{}, Ly{}, Lz{};
   double V{};
   double cx{}, cy{}, cz{};    // box center, therefore center of inscribed/circumscribed spheres
+  double L_average{};         // average edge length
+  double L_min{};             // min edge length
 };
 
 struct Application {
@@ -121,6 +138,10 @@ struct Application {
   std::ofstream obs;
   std::ofstream rdf;
 
+  bool calculate_rdf           = false;
+  bool calculate_inscribed     = false;
+  bool calculate_circumscribed = false;
+
   adios2::Variable<double> vAtoms;
   adios2::Variable<uint64_t> vNt;
   adios2::Variable<uint64_t> vNatoms;
@@ -132,7 +153,13 @@ struct Application {
   adios2::Variable<double> vZhi;
 
   std::vector<double> atoms;
-  std::vector<double> x, y, z;          // raw dimensional coordinates
+  std::vector<double> x, y, z;    // raw dimensional coordinates
+  std::vector<double> sx, sy, sz;
+  std::vector<double> sr;
+  std::vector<size_t> idlist;
+  std::vector<double> coords;
+  std::vector<double> temp_coords;
+  std::vector<bool> inside;
   std::vector<double> fcx, fcy, fcz;    // atom dimensional coordinates relative to the cell center
   std::vector<double> cx1, cy1, cz1;    // same as fc, but for image x->x-Lx
   std::vector<double> cx2, cy2, cz2;    // same as fc, but for image x->x+Lx
@@ -158,10 +185,11 @@ struct Application {
 
   uint64_t timestep = 0;
   size_t N          = 0;    // atom number in cell
-  Box box;                  // cell
-  double rmax  = 0;         // max distance to calculate rdf
-  size_t nbins = 0;         // number of bins for rdf
-  double dr    = 0;         // bin width
+  size_t N3         = 0;
+  Box box;             // cell
+  double rmax  = 0;    // max distance to calculate rdf
+  size_t nbins = 0;    // number of bins for rdf
+  double dr    = 0;    // bin width
 
   size_t Ni    = 0;    // number of atoms inside inscribed sphere, calculated from geometry
   size_t Nri   = 0;    // number of atoms inside inscribed sphere, counted from dataa
