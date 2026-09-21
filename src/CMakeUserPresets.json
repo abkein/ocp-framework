@@ -24,7 +24,7 @@
       },
       "environment": {},
       "generator": "Unix Makefiles",
-      "binaryDir": "./build"
+      "binaryDir": "../build"
     },
     {
       "name": "Debug",
