@@ -1,4 +1,4 @@
-#include "analyze_lammps_adios.hpp"
+#include "ocp-framework.hpp"
 
 #include <adios2/common/ADIOSTypes.h>
 #include <adios2/cxx/ADIOS.h>
