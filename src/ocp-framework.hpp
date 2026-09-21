@@ -7,9 +7,11 @@
 #include <adios2/cxx/Variable.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -30,7 +32,7 @@ struct Options {
     const std::string usage = "Usage: ocp-framework <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
                               "                              [--obs-out observables.csv] [--rdf-out rdf.csv]\n"
                               "                              [--rdf dr] [--rmax 0.0] [--rmax-frac 0.5]\n"
-                              "                              [-i] [-c]\n";
+                              "                              [-i] [-c] [--gamma Gamma]\n";
     if (argc < 2) { throw std::runtime_error(usage); }
     const std::string firstarg = argv[1];
     if ((firstarg == "--help") || (firstarg == "-h")) { throw std::runtime_error(usage); }
@@ -61,6 +63,18 @@ struct Options {
         calculate_inscribed = true;
       } else if (a == "-c") {
         calculate_circumscribed = true;
+      } else if (a == "--gamma") {
+        const auto value  = need_value(argc, argv, i);
+        const char* error = "--gamma must be finite and > 0, with a finite positive 1/Gamma";
+        size_t consumed   = 0;
+        try {
+          gamma = std::stod(value, &consumed);
+        } catch (const std::logic_error&) {
+          throw std::runtime_error(error);
+        }
+        if (consumed != value.size() || !std::isfinite(gamma) || gamma <= 0.0 || !std::isfinite(1.0 / gamma) || 1.0 / gamma <= 0.0) {
+          throw std::runtime_error(error);
+        }
       } else {
         throw std::runtime_error("Unknown argument: " + a);
       }
@@ -68,6 +82,7 @@ struct Options {
   }
 
   SDInfo info{};
+  double gamma = std::numeric_limits<double>::quiet_NaN();
 
   std::string bpFile;
   std::string adiosConfig      = "adios2_config.xml";
@@ -105,6 +120,14 @@ struct Box {
   double cx{}, cy{}, cz{};    // box center, therefore center of inscribed/circumscribed spheres
   double L_average{};         // average edge length
   double L_min{};             // min edge length
+};
+
+struct SphereVirial {
+  // Virial per mean ion, including the 1/3 used in the pressure equation.
+  double virial          = std::numeric_limits<double>::quiet_NaN();
+  double excess_pressure = std::numeric_limits<double>::quiet_NaN();
+  double pressure        = std::numeric_limits<double>::quiet_NaN();
+  double compressibility = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct Application {
@@ -172,6 +195,8 @@ struct Application {
   double upexc = 0;
   double ubexc = 0;
   double ucc   = 0;
+  SphereVirial viriali, virialc;
+  double gamma = std::numeric_limits<double>::quiet_NaN();
 };
 
 namespace COLS {

@@ -64,12 +64,87 @@ An empty selected sphere with $N>0$ still has nonzero $u_c$ and returns
 $u_{p\mathrm{ex}}=-u_c$ and $u_{b\mathrm{ex}}=-u_c/2$. The formulas assume a
 nonempty simulation ($N>0$).
 
+# Virial and pressure contribution
+
+For either sphere, write $N_s$ for its unrounded mean population and
+$V_s=4\pi R_s^3/3$ for its volume. The density is
+$n=N_s/V_s=N/V$, where $N,V$ refer to the original simulation cell.
+
+Use the same reduced units as the energy formulas and `locp-reference.py`:
+the pair potential is $1/r$, and the background force on an ion is
+$\mathbf F_{b,i}=-\mathbf r_i$. Positions are measured from the box center.
+For the physical OCP interpretation these are ion-sphere units
+($a=1$, unit Coulomb coefficient, $k_B=1$); the program does not infer or
+convert units from the dump.
+
+For each selected ion or image, include forces only from the other selected
+points and the background:
+$$
+\mathbf F_i=\sum_{\substack{j\in s\\j\ne i}}
+\frac{\mathbf r_i-\mathbf r_j}{r_{ij}^3}-\mathbf r_i.
+$$
+The total force virial and the reported virial per mean ion are
+$$
+W_s=\sum_{i\in s}\mathbf r_i\cdot\mathbf F_i
+=\sum_{\substack{i<j\\i,j\in s}}\frac{1}{r_{ij}}-\sum_{i\in s}r_i^2,
+\qquad
+w_s=\frac{W_s}{3N_s}
+=\frac{u_{p\mathrm{ex}}^{(s)}-2u_{b\mathrm{ex}}^{(s)}}{3}.
+$$
+Thus the virial contribution to ion pressure is
+$$
+p_{\mathrm{ex},s}=\frac{W_s}{3V_s}=n w_s.
+$$
+The factor $1/3$ is already included in $w_s$. The constant energy offsets
+$u_c$ cancel and do not contribute to forces. The implementation uses the
+raw pair and squared-radius sums before subtracting these offsets.
+
+These are sphere-restricted ion virials: interactions with points outside
+the sphere are excluded, and no separate background self-pressure is added.
+Total ion pressure additionally includes the kinetic term $nT$, following
+the [virial pressure relation](https://docs.lammps.org/stable/compute_pressure.html).
+These restricted values need not equal the full periodic Ewald pressure
+reported by LAMMPS.
+
+With `--gamma Gamma`, use a constant reduced temperature $T=1/\Gamma$ for
+every frame. Total pressure and the ion compressibility factor are then
+$$
+p_s=n(T+w_s)=\frac{n}{\Gamma}+p_{\mathrm{ex},s},
+\qquad
+Z_{\mathrm{ion},s}=\frac{p_s V_s}{N_s T}
+=\frac{p_s V}{NT}=1+\Gamma w_s.
+$$
+Here $N_s$ is the same mean population used for energies and virials, not the
+instantaneous selected count. This estimates the kinetic contribution from
+the supplied constant temperature; it does not measure temperature fluctuations
+from the trajectory.
+
 # Running and output
 
 Use `-i` for the inscribed sphere and `-c` for the circumscribed sphere;
 the options can be combined. `Ni` and `Nc` in `observables.csv` are mean
 populations, while `Nri` and `Nrc` are actual selected counts. The circumscribed
 outputs are appended as `Nc,Nrc,upexc,ubexc,ucc`.
+
+The additional columns `viriali,pexi,virialc,pexc` report $w_s$ and
+$p_{\mathrm{ex},s}$ for the inscribed and circumscribed spheres respectively.
+They are calculated automatically with `-i` and `-c`. A disabled sphere has
+`nan` in these columns; an empty selected sphere with $N>0$ has zero virial
+and zero excess pressure.
+
+The optional `--gamma Gamma` argument must be finite and positive, with a
+representable finite positive reciprocal. It appends values in columns
+`Gamma,T,pi,Zi,pc,Zc`: the coupling parameter, inferred temperature, and total
+pressure and compressibility factor for each sphere. Without `--gamma`, these
+columns contain `nan`; pressure and compressibility also contain `nan` for a
+disabled sphere. The existing virial and excess-pressure columns are independent
+of `--gamma`. Zero virial gives $p_s=nT$ and $Z_{\mathrm{ion},s}=1$.
+
+For example, using ADIOS2 defaults and $\Gamma=10$:
+
+```sh
+ocp-framework dumps/dump.bp --config "" -i -c --gamma 10
+```
 
 `--rdf dr` produces per-ion pair counts in radial bins of width `dr`, using
 minimum-image distances. Distances at or above `rmax` are excluded, including

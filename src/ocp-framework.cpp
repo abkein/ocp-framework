@@ -43,6 +43,21 @@ namespace {
     pair_sum   = pair_sum / mean_population - uc;
     radius_sum = 0.5 * (radius_sum / mean_population - uc);
   }
+
+  [[nodiscard]] SphereVirial sphere_virial(const double mean_population, const double pair_sum, const double radius_sum, const double density,
+                                           const double gamma)
+  {
+    SphereVirial result;
+    if (mean_population == 0.0) { return result; }
+    // Coulomb pairs contribute +1/r; the background force -r contributes -r^2.
+    result.virial          = (pair_sum - radius_sum) / (3.0 * mean_population);
+    result.excess_pressure = density * result.virial;
+    if (std::isfinite(gamma)) {
+      result.pressure        = density * (1.0 / gamma + result.virial);
+      result.compressibility = 1.0 + gamma * result.virial;
+    }
+    return result;
+  }
 }    // namespace
 
 Application::Application(const Options& options)
@@ -53,6 +68,7 @@ Application::Application(const Options& options)
   if (!(calculate_rdf || calculate_inscribed || calculate_circumscribed)) { throw std::runtime_error("Need at least one calculation specified."); }
 
   info    = options.info;
+  gamma   = options.gamma;
   adios   = adios2::ADIOS(options.adiosConfig);
   io      = adios.DeclareIO(options.ioName);
 
@@ -63,7 +79,7 @@ Application::Application(const Options& options)
   out_csv = std::ofstream(options.csv_out);
   if (!out_csv) { throw std::runtime_error("Cannot open " + options.csv_out); }
   out_csv << std::setprecision(std::numeric_limits<double>::max_digits10);
-  out_csv << "timestep,N,V,rmax,dr,nbins,Ni,Nri,upexi,ubexi,uci,Nc,Nrc,upexc,ubexc,ucc\n";
+  out_csv << "timestep,N,V,rmax,dr,nbins,Ni,Nri,upexi,ubexi,uci,Nc,Nrc,upexc,ubexc,ucc,viriali,pexi,virialc,pexc,Gamma,T,pi,Zi,pc,Zc\n";
 
   if (calculate_rdf) {
     out_rdf = std::ofstream(options.rdf_out);
@@ -181,6 +197,7 @@ void Application::inscribed()
     }
   }
 
+  viriali = sphere_virial(Ni, upexi, ubexi, static_cast<double>(N) / box.V, gamma);
   normalize_sphere(Ni, upexi, ubexi, uci);
 }
 
@@ -229,6 +246,7 @@ void Application::circumscribed()
       upexc += 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
     }
   }
+  virialc = sphere_virial(Nc, upexc, ubexc, static_cast<double>(N) / box.V, gamma);
   normalize_sphere(Nc, upexc, ubexc, ucc);
 }
 
@@ -251,7 +269,9 @@ void Application::calculate()
 void Application::write()
 {
   out_csv << timestep << "," << N << "," << box.V << "," << rmax << "," << dr << "," << nbins << "," << Ni << "," << Nri << "," << upexi << ","
-          << ubexi << "," << uci << "," << Nc << "," << Nrc << "," << upexc << "," << ubexc << "," << ucc << "\n";
+          << ubexi << "," << uci << "," << Nc << "," << Nrc << "," << upexc << "," << ubexc << "," << ucc << "," << viriali.virial << ","
+          << viriali.excess_pressure << "," << virialc.virial << "," << virialc.excess_pressure << "," << gamma << "," << 1.0 / gamma << ","
+          << viriali.pressure << "," << viriali.compressibility << "," << virialc.pressure << "," << virialc.compressibility << "\n";
   out_csv.flush();
   if (calculate_rdf) {
     out_rdf << timestep;
