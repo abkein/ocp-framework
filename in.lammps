@@ -1,0 +1,51 @@
+variable Natoms equal $(20^3)
+variable ms equal 1
+
+variable Gamma equal 1  # Coulomb-coupling parameter
+variable rs    equal 1  # ion-sphere radius
+variable Z     equal 1  # ion charge
+variable dens  equal $(3/(4*PI*v_rs^(3)))
+variable T     equal $(v_Z^2 / (v_rs * v_Gamma))  # temperature, effectively T=1/Gamma
+variable Vol   equal $(v_Natoms/v_dens)
+variable L     equal $(v_Vol^(1/3))
+variable tss   equal 0.01  # timestep
+
+variable potCutoff equal 14  # r_c for Ewald-agorithm
+
+variable dmpfreq   equal 1000  # timesteps between ADIOS2 snapshots
+
+variable SEED_I    equal 48279 # genuinely random variables are set here in a real run
+variable SEED_II   equal 87287 # genuinely random variables are set here in a real run
+
+units lj
+
+atom_style charge
+boundary p p p
+
+region mainbox block $(-v_L/2) $(v_L/2) $(-v_L/2) $(v_L/2) $(-v_L/2) $(v_L/2) side in units box
+create_box 1 mainbox
+
+neigh_modify one $(3*v_Natoms) page $(33*v_Natoms)
+
+pair_style coul/long $(v_potCutoff)
+pair_coeff * *
+
+create_atoms 1 random ${Natoms} ${SEED_I} mainbox overlap 1
+
+kspace_style    ewald 1.0e-6
+# kspace_modify   gewald 0.25 kmax 7 7 7
+mass 1 ${ms}
+
+set group all charge $(v_Z)
+
+dump DUMP all atom/adios ${dmpfreq} dumps/dump.bp
+thermo_style custom step temp ecoul epair etotal pe press
+thermo ${dmpfreq}
+
+timestep ${tss}
+
+velocity all create $(v_T) ${SEED_II} dist gaussian sum no mom yes rot yes loop geom units box
+
+fix NVEFIX all nve
+
+run 1000000

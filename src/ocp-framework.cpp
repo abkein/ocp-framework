@@ -32,18 +32,18 @@ namespace {
   }
 }    // namespace
 
-Application::Application(const Options& opt)
+Application::Application(const Options& options)
 {
-  calculate_rdf           = opt.calculate_rdf;
-  calculate_inscribed     = opt.calculate_inscribed;
+  calculate_rdf           = options.calculate_rdf;
+  calculate_inscribed     = options.calculate_inscribed;
   if (!(calculate_rdf || calculate_inscribed)) { throw std::runtime_error("Need at least one calculation specified."); }
 
-  info   = opt.info;
-  adios  = adios2::ADIOS(opt.adiosConfig);
-  io     = adios.DeclareIO(opt.ioName);
+  info   = options.info;
+  adios  = adios2::ADIOS(options.adiosConfig);
+  io     = adios.DeclareIO(options.ioName);
 
   // Read file
-  reader = io.Open(opt.bpFile, adios2::Mode::Read);
+  reader = io.Open(options.bpFile, adios2::Mode::Read);
 
   // Attributes (constant across steps)
   if (auto a = io.InquireAttribute<int32_t>("scaled"); a) { scaled = a.Data()[0]; }
@@ -52,13 +52,13 @@ Application::Application(const Options& opt)
   if (triclinic != 0) { throw std::runtime_error("triclinic=1 is not supported by this program (needs tilt factors)."); }
 
   // Output files
-  obs = std::ofstream(opt.obsOut);
-  if (!obs) { throw std::runtime_error("Cannot open " + opt.obsOut); }
-  obs << "timestep,N,V,rmax,dr,nbins,Ni,Nri,upexi,ubexi,uci\n";
+  out_csv = std::ofstream(options.csv_out);
+  if (!out_csv) { throw std::runtime_error("Cannot open " + options.csv_out); }
+  out_csv << "timestep,N,V,rmax,dr,nbins,Ni,Nri,upexi,ubexi,uci\n";
 
   if (calculate_rdf) {
-    rdf = std::ofstream(opt.rdfOut);
-    if (!rdf) { throw std::runtime_error("Cannot open " + opt.rdfOut); }
+    out_rdf = std::ofstream(options.rdf_out);
+    if (!out_rdf) { throw std::runtime_error("Cannot open " + options.rdf_out); }
   }
 
   // Inquire variables
@@ -185,11 +185,6 @@ void Application::calculate()
 {
   if (calculate_rdf) { compute_rdf_celllist(); }
 
-  // for (size_t i = 0; i < N; ++i) { x[i] -= box.cx; }
-  // for (size_t i = 0; i < N; ++i) { y[i] -= box.cy; }
-  // for (size_t i = 0; i < N; ++i) { z[i] -= box.cz; }
-  // for (size_t i = 0; i < N; ++i) { sr[i] = x[i] * x[i] + y[i] * y[i] + z[i] * z[i]; }
-
   sr.resize(N);
   for (size_t i = 0; i < N; ++i) {
     x[i] -= box.cx;
@@ -203,14 +198,14 @@ void Application::calculate()
 
 void Application::write()
 {
-  obs << timestep << "," << N << "," << box.V << "," << rmax << "," << dr << "," << nbins << "," << Ni << "," << Nri << "," << upexi << "," << ubexi
+  out_csv << timestep << "," << N << "," << box.V << "," << rmax << "," << dr << "," << nbins << "," << Ni << "," << Nri << "," << upexi << "," << ubexi
       << "," << uci << "\n";
-  obs.flush();
+  out_csv.flush();
   if (calculate_rdf) {
-    rdf << timestep;
-    for (size_t i = 0; i < nbins; ++i) { rdf << "," << counts[i]; }
-    rdf << "\n";
-    rdf.flush();
+    out_rdf << timestep;
+    for (size_t i = 0; i < nbins; ++i) { out_rdf << "," << counts[i]; }
+    out_rdf << "\n";
+    out_rdf.flush();
   }
 }
 
@@ -252,8 +247,8 @@ void Application::compute_rdf_celllist()
 
 Application::~Application()
 {
-  obs.close();
-  if (calculate_rdf) { rdf.close(); }
+  out_csv.close();
+  if (calculate_rdf) { out_rdf.close(); }
   reader.Close();
 }
 

@@ -1,5 +1,5 @@
-#ifndef ANALYZE_LAMMPS_ADIOS_H
-#define ANALYZE_LAMMPS_ADIOS_H
+#ifndef OCP_FRAMEWORK_HPP
+#define OCP_FRAMEWORK_HPP
 
 #include <adios2/cxx/ADIOS.h>
 #include <adios2/cxx/Engine.h>
@@ -27,10 +27,10 @@ struct SDInfo {
 struct Options {
   Options(int argc, char** argv)
   {
-    const std::string usage = "Usage: analyze_lammps_adios <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
-                              "                                      [--obs-out observables.csv] [--rdf-out rdf.csv]\n"
-                              "                                      [--rdf dr] [--rmax 0.0] [--rmax-frac 0.5]\n"
-                              "                                      [-i]\n";
+    const std::string usage = "Usage: ocp-framewor <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
+                              "                              [--obs-out observables.csv] [--rdf-out rdf.csv]\n"
+                              "                              [--rdf dr] [--rmax 0.0] [--rmax-frac 0.5]\n"
+                              "                              [-i]\n";
     if (argc < 2) { throw std::runtime_error(usage); }
     const std::string firstarg = argv[1];
     if ((firstarg == "--help") || (firstarg == "-h")) { throw std::runtime_error(usage); }
@@ -54,9 +54,9 @@ struct Options {
         info.dr       = std::stod(need_value(argc, argv, i));
         if (info.dr <= 0.0) { throw std::runtime_error("dr must be > 0"); }
       } else if (a == "--obs-out") {
-        obsOut = need_value(argc, argv, i);
+        csv_out = need_value(argc, argv, i);
       } else if (a == "--rdf-out") {
-        rdfOut = need_value(argc, argv, i);
+        rdf_out = need_value(argc, argv, i);
       } else if (a == "-i") {
         calculate_inscribed = true;
       } else {
@@ -71,8 +71,8 @@ struct Options {
   std::string adiosConfig      = "adios2_config.xml";
   std::string ioName           = "read_dump";
 
-  std::string obsOut           = "observables.csv";
-  std::string rdfOut           = "rdf.csv";
+  std::string csv_out           = "observables.csv";
+  std::string rdf_out           = "rdf.csv";
 
   bool calculate_rdf           = false;
   bool calculate_inscribed     = false;
@@ -127,8 +127,8 @@ struct Application {
   adios2::Engine reader;
   int32_t scaled    = 0;    // 0 if coordinates are dimensional (real); 1 if dimensionless — x->x/Lx, y->y/Ly, z->z/Lz
   int32_t triclinic = 0;
-  std::ofstream obs;
-  std::ofstream rdf;
+  std::ofstream out_csv;
+  std::ofstream out_rdf;
 
   bool calculate_rdf           = false;
   bool calculate_inscribed     = false;
@@ -146,7 +146,7 @@ struct Application {
   std::vector<double> atoms;
   std::vector<double> x, y, z;    // raw dimensional coordinates
   // std::vector<double> sx, sy, sz;
-  std::vector<double> sr;
+  std::vector<double> sr;        // squared distances from cell center
   std::vector<size_t> idlist;
   std::vector<double> counts;    // radial distribution function (rdf), but only raw counts, unnormalized
 
@@ -193,4 +193,4 @@ struct CenterOfMass {
   }
 };
 
-#endif    // !ANALYZE_LAMMPS_ADIOS_H
+#endif    // !OCP_FRAMEWORK_HPP
