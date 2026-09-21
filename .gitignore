@@ -1,5 +1,8 @@
 .cache
 .direnv
 .vscode
-build
 .envrc
+
+build
+
+result
