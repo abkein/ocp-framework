@@ -3,6 +3,7 @@
   stdenv,
   cmake,
   adios2,
+  python3,
 }:
 
 stdenv.mkDerivation {
@@ -11,8 +12,17 @@ stdenv.mkDerivation {
 
   src = lib.cleanSource ./src;
 
-  nativeBuildInputs = [ cmake ];
+  nativeBuildInputs = [
+    cmake
+    python3
+  ];
   buildInputs = [ adios2 ];
+  doCheck = true;
+  checkPhase = ''
+    runHook preCheck
+    ctest --output-on-failure
+    runHook postCheck
+  '';
 
   # The CMake project does not define an install target.
   installPhase = ''

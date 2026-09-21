@@ -14,9 +14,9 @@
 #include <string>
 #include <vector>
 
-using size_t                             = std::size_t;
+using size_t               = std::size_t;
 
-static constexpr double PI               = 3.141592653589793;
+static constexpr double PI = 3.141592653589793;
 
 struct SDInfo {
   double rmax     = -1.0;    // if < 0: use rmaxFrac * min(L)
@@ -27,10 +27,10 @@ struct SDInfo {
 struct Options {
   Options(int argc, char** argv)
   {
-    const std::string usage = "Usage: ocp-framewor <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
+    const std::string usage = "Usage: ocp-framework <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
                               "                              [--obs-out observables.csv] [--rdf-out rdf.csv]\n"
                               "                              [--rdf dr] [--rmax 0.0] [--rmax-frac 0.5]\n"
-                              "                              [-i]\n";
+                              "                              [-i] [-c]\n";
     if (argc < 2) { throw std::runtime_error(usage); }
     const std::string firstarg = argv[1];
     if ((firstarg == "--help") || (firstarg == "-h")) { throw std::runtime_error(usage); }
@@ -59,6 +59,8 @@ struct Options {
         rdf_out = need_value(argc, argv, i);
       } else if (a == "-i") {
         calculate_inscribed = true;
+      } else if (a == "-c") {
+        calculate_circumscribed = true;
       } else {
         throw std::runtime_error("Unknown argument: " + a);
       }
@@ -71,11 +73,12 @@ struct Options {
   std::string adiosConfig      = "adios2_config.xml";
   std::string ioName           = "read_dump";
 
-  std::string csv_out           = "observables.csv";
-  std::string rdf_out           = "rdf.csv";
+  std::string csv_out          = "observables.csv";
+  std::string rdf_out          = "rdf.csv";
 
   bool calculate_rdf           = false;
   bool calculate_inscribed     = false;
+  bool calculate_circumscribed = false;
 
   [[nodiscard]] static std::string need_value(int argc, const char* const* const argv, int& i)
   {
@@ -119,6 +122,7 @@ struct Application {
   void write();
   void compute_rdf_celllist();
   void inscribed();
+  void circumscribed();
 
   SDInfo info{};
 
@@ -132,6 +136,7 @@ struct Application {
 
   bool calculate_rdf           = false;
   bool calculate_inscribed     = false;
+  bool calculate_circumscribed = false;
 
   adios2::Variable<double> vAtoms;
   adios2::Variable<uint64_t> vNt;
@@ -146,22 +151,27 @@ struct Application {
   std::vector<double> atoms;
   std::vector<double> x, y, z;    // raw dimensional coordinates
   // std::vector<double> sx, sy, sz;
-  std::vector<double> sr;        // squared distances from cell center
+  std::vector<double> sr;    // squared distances from cell center
   std::vector<size_t> idlist;
   std::vector<double> counts;    // radial distribution function (rdf), but only raw counts, unnormalized
 
   uint64_t timestep = 0;
   size_t N          = 0;    // atom number in cell
-  Box box;             // cell
-  double rmax  = 0;    // max distance to calculate rdf
-  size_t nbins = 0;    // number of bins for rdf
-  double dr    = 0;    // bin width
+  Box box;                  // cell
+  double rmax  = 0;         // max distance to calculate rdf
+  size_t nbins = 0;         // number of bins for rdf
+  double dr    = 0;         // bin width
 
-  size_t Ni    = 0;    // number of atoms inside inscribed sphere, calculated from geometry
-  size_t Nri   = 0;    // number of atoms inside inscribed sphere, counted from dataa
+  double Ni    = 0;    // mean population of inscribed sphere, calculated from geometry
+  size_t Nri   = 0;    // number of atoms inside inscribed sphere, counted from data
   double upexi = 0;    // energies for inscribed sphere
   double ubexi = 0;    // energies for inscribed sphere
   double uci   = 0;    // energies for inscribed sphere
+  double Nc    = 0;    // mean population of circumscribed sphere, calculated from geometry
+  size_t Nrc   = 0;    // number of atoms and images inside circumscribed sphere
+  double upexc = 0;
+  double ubexc = 0;
+  double ucc   = 0;
 };
 
 namespace COLS {

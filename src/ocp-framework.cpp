@@ -11,7 +11,9 @@
 #include <cstdint>
 #include <exception>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,11 +26,22 @@ namespace {
     return dx;
   }
 
-  [[nodiscard]] inline size_t N_in_sphere(const size_t N, const Box& box, const double radius)
+  [[nodiscard]] inline double N_in_sphere(const size_t N, const Box& box, const double radius)
   {
     const double sphere_volume = (4.0 / 3.0) * PI * radius * radius * radius;
-    const double N_in          = static_cast<double>(N) * sphere_volume / box.V;
-    return static_cast<size_t>(std::llround(N_in));
+    return static_cast<double>(N) * sphere_volume / box.V;
+  }
+
+  // The sums count actual points; normalization uses the mean population.
+  inline void normalize_sphere(const double mean_population, double& pair_sum, double& radius_sum, double& uc)
+  {
+    if (mean_population == 0.0) {
+      uc = pair_sum = radius_sum = 0.0;
+      return;
+    }
+    uc         = (3.0 / 5.0) * std::pow(mean_population, 2.0 / 3.0);
+    pair_sum   = pair_sum / mean_population - uc;
+    radius_sum = 0.5 * (radius_sum / mean_population - uc);
   }
 }    // namespace
 
@@ -36,30 +49,37 @@ Application::Application(const Options& options)
 {
   calculate_rdf           = options.calculate_rdf;
   calculate_inscribed     = options.calculate_inscribed;
-  if (!(calculate_rdf || calculate_inscribed)) { throw std::runtime_error("Need at least one calculation specified."); }
+  calculate_circumscribed = options.calculate_circumscribed;
+  if (!(calculate_rdf || calculate_inscribed || calculate_circumscribed)) { throw std::runtime_error("Need at least one calculation specified."); }
 
-  info   = options.info;
-  adios  = adios2::ADIOS(options.adiosConfig);
-  io     = adios.DeclareIO(options.ioName);
+  info    = options.info;
+  adios   = adios2::ADIOS(options.adiosConfig);
+  io      = adios.DeclareIO(options.ioName);
 
   // Read file
-  reader = io.Open(options.bpFile, adios2::Mode::Read);
+  reader  = io.Open(options.bpFile, adios2::Mode::Read);
 
+  // Output files
+  out_csv = std::ofstream(options.csv_out);
+  if (!out_csv) { throw std::runtime_error("Cannot open " + options.csv_out); }
+  out_csv << std::setprecision(std::numeric_limits<double>::max_digits10);
+  out_csv << "timestep,N,V,rmax,dr,nbins,Ni,Nri,upexi,ubexi,uci,Nc,Nrc,upexc,ubexc,ucc\n";
+
+  if (calculate_rdf) {
+    out_rdf = std::ofstream(options.rdf_out);
+    if (!out_rdf) { throw std::runtime_error("Cannot open " + options.rdf_out); }
+    out_rdf << std::setprecision(std::numeric_limits<double>::max_digits10);
+  }
+}
+
+void Application::prepare_data()
+{
+  // BP5 exposes metadata only after BeginStep(). Refresh handles per step.
   // Attributes (constant across steps)
   if (auto a = io.InquireAttribute<int32_t>("scaled"); a) { scaled = a.Data()[0]; }
 
   if (auto a = io.InquireAttribute<int32_t>("triclinic"); a) { triclinic = a.Data()[0]; }
   if (triclinic != 0) { throw std::runtime_error("triclinic=1 is not supported by this program (needs tilt factors)."); }
-
-  // Output files
-  out_csv = std::ofstream(options.csv_out);
-  if (!out_csv) { throw std::runtime_error("Cannot open " + options.csv_out); }
-  out_csv << "timestep,N,V,rmax,dr,nbins,Ni,Nri,upexi,ubexi,uci\n";
-
-  if (calculate_rdf) {
-    out_rdf = std::ofstream(options.rdf_out);
-    if (!out_rdf) { throw std::runtime_error("Cannot open " + options.rdf_out); }
-  }
 
   // Inquire variables
   vAtoms = io.InquireVariable<double>("atoms");
@@ -78,10 +98,7 @@ Application::Application(const Options& options)
   vZlo = io.InquireVariable<double>("boxzlo");
   vZhi = io.InquireVariable<double>("boxzhi");
   if (!vXlo || !vXhi || !vYlo || !vYhi || !vZlo || !vZhi) { throw std::runtime_error("Box bound variables not found (box{x,y,z}{lo,hi})."); }
-}
 
-void Application::prepare_data()
-{
   reader.Get(vNt, timestep);
   uint64_t natoms{};
   reader.Get(vNatoms, natoms);
@@ -121,7 +138,7 @@ void Application::prepare_data()
       z[i] = box.zlo + box.Lz * atoms[COLS::NUM_COLS * i + COLS::Z];
     }
   } else {
-    // cx,cy,cz are real coordinates; wrap into box for consistency
+    // Coordinates are already wrapped into the box by the input contract.
     for (size_t i = 0; i < N; ++i) {
       x[i] = atoms[COLS::NUM_COLS * i + COLS::X];
       y[i] = atoms[COLS::NUM_COLS * i + COLS::Y];
@@ -160,25 +177,59 @@ void Application::inscribed()
       const double dy  = yi - y[jj];
       const double dz  = zi - z[jj];
       const double rij = std::sqrt(dx * dx + dy * dy + dz * dz);
-      // if (rij == 0.0) { continue; }
       upexi += 1.0 / rij;
     }
   }
 
-  if (Nri == 0) {
-    uci   = 0.0;
-    upexi = 0.0;
-    ubexi = 0.0;
-    return;
+  normalize_sphere(Ni, upexi, ubexi, uci);
+}
+
+void Application::circumscribed()
+{
+  const double Rsq    = 0.25 * (box.Lx * box.Lx + box.Ly * box.Ly + box.Lz * box.Lz);
+  const double radius = std::sqrt(Rsq);
+  Nc                  = N_in_sphere(N, box, radius);
+  upexc               = 0.0;
+  ubexc               = 0.0;
+
+  struct Point {
+    double x, y, z;
+  };
+  std::vector<Point> points;
+  points.reserve(N);
+
+  // An image at shift k can intersect the sphere only if
+  // (|k| - 1/2) L <= radius. For cubes this gives shifts -1, 0, 1.
+  const int nx = static_cast<int>(std::floor(radius / box.Lx + 0.5));
+  const int ny = static_cast<int>(std::floor(radius / box.Ly + 0.5));
+  const int nz = static_cast<int>(std::floor(radius / box.Lz + 0.5));
+  for (int ix = -nx; ix <= nx; ++ix) {
+    for (int iy = -ny; iy <= ny; ++iy) {
+      for (int iz = -nz; iz <= nz; ++iz) {
+        for (size_t i = 0; i < N; ++i) {
+          const Point p{x[i] + ix * box.Lx, y[i] + iy * box.Ly, z[i] + iz * box.Lz};
+          const double rsq = p.x * p.x + p.y * p.y + p.z * p.z;
+          if (rsq <= Rsq) {
+            points.push_back(p);
+            ubexc += rsq;
+          }
+        }
+      }
+    }
   }
+  Nrc = points.size();
 
-  uci = (3.0 / 5.0) * std::pow(Nri, 2.0 / 3.0);
-  upexi /= static_cast<double>(Nri);
-  upexi -= uci;
-
-  ubexi /= static_cast<double>(Nri);
-  ubexi -= uci;
-  ubexi *= 0.5;
+  // Every selected image is a distinct point, including images of the same
+  // original ion. Use direct distances, without a minimum-image reduction.
+  for (size_t i = 0; i < Nrc; ++i) {
+    for (size_t j = i + 1; j < Nrc; ++j) {
+      const double dx = points[i].x - points[j].x;
+      const double dy = points[i].y - points[j].y;
+      const double dz = points[i].z - points[j].z;
+      upexc += 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+  }
+  normalize_sphere(Nc, upexc, ubexc, ucc);
 }
 
 void Application::calculate()
@@ -194,12 +245,13 @@ void Application::calculate()
   }
 
   if (calculate_inscribed) { inscribed(); }
+  if (calculate_circumscribed) { circumscribed(); }
 }
 
 void Application::write()
 {
-  out_csv << timestep << "," << N << "," << box.V << "," << rmax << "," << dr << "," << nbins << "," << Ni << "," << Nri << "," << upexi << "," << ubexi
-      << "," << uci << "\n";
+  out_csv << timestep << "," << N << "," << box.V << "," << rmax << "," << dr << "," << nbins << "," << Ni << "," << Nri << "," << upexi << ","
+          << ubexi << "," << uci << "," << Nc << "," << Nrc << "," << upexc << "," << ubexc << "," << ucc << "\n";
   out_csv.flush();
   if (calculate_rdf) {
     out_rdf << timestep;
@@ -225,9 +277,10 @@ void Application::run()
 void Application::compute_rdf_celllist()
 {
   // enforce safe maximum for minimum-image RDF
-  rmax  = info.rmax <= 0.0 ? info.rmaxFrac * box.L_min : std::min(info.rmax, 0.5 * box.L_min);
-  dr    = info.dr;
-  nbins = std::max<size_t>(1, static_cast<size_t>(std::ceil(rmax / dr)));
+  const double requested_rmax = info.rmax <= 0.0 ? info.rmaxFrac * box.L_min : info.rmax;
+  rmax                        = std::min(requested_rmax, 0.5 * box.L_min);
+  dr                          = info.dr;
+  nbins                       = std::max<size_t>(1, static_cast<size_t>(std::ceil(rmax / dr)));
   counts.resize(nbins);
   counts.assign(nbins, 0);
   if (N < 2) { return; }
@@ -238,7 +291,8 @@ void Application::compute_rdf_celllist()
       const double dy       = min_image(y[i] - y[j], box.Ly);
       const double dz       = min_image(z[i] - z[j], box.Lz);
       const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-      const auto ibin       = static_cast<size_t>(distance / dr);    // floor
+      if (distance >= rmax) { continue; }
+      const auto ibin = static_cast<size_t>(distance / dr);    // floor
       counts[ibin < nbins ? ibin : nbins - 1] += 2;
     }
   }
