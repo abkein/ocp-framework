@@ -7,8 +7,6 @@
 #include <adios2/cxx/Variable.h>
 
 #include <algorithm>
-#include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -19,8 +17,6 @@
 using size_t                             = std::size_t;
 
 static constexpr double PI               = 3.141592653589793;
-static const double SQRTofTHREE_over_TWO = 0.5 * std ::sqrt(2.0);
-// static const double ONEoverSQRTofTWO     = 1.0 / std::sqrt(2.0);
 
 struct SDInfo {
   double rmax     = -1.0;    // if < 0: use rmaxFrac * min(L)
@@ -34,7 +30,7 @@ struct Options {
     const std::string usage = "Usage: analyze_lammps_adios <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
                               "                                      [--obs-out observables.csv] [--rdf-out rdf.csv]\n"
                               "                                      [--rdf dr] [--rmax 0.0] [--rmax-frac 0.5]\n"
-                              "                                      [-i] [-c]\n";
+                              "                                      [-i]\n";
     if (argc < 2) { throw std::runtime_error(usage); }
     const std::string firstarg = argv[1];
     if ((firstarg == "--help") || (firstarg == "-h")) { throw std::runtime_error(usage); }
@@ -63,8 +59,6 @@ struct Options {
         rdfOut = need_value(argc, argv, i);
       } else if (a == "-i") {
         calculate_inscribed = true;
-      } else if (a == "-c") {
-        calculate_circumscribed = true;
       } else {
         throw std::runtime_error("Unknown argument: " + a);
       }
@@ -82,7 +76,6 @@ struct Options {
 
   bool calculate_rdf           = false;
   bool calculate_inscribed     = false;
-  bool calculate_circumscribed = false;
 
   [[nodiscard]] static std::string need_value(int argc, const char* const* const argv, int& i)
   {
@@ -126,7 +119,6 @@ struct Application {
   void write();
   void compute_rdf_celllist();
   void inscribed();
-  void circumscribed();
 
   SDInfo info{};
 
@@ -140,7 +132,6 @@ struct Application {
 
   bool calculate_rdf           = false;
   bool calculate_inscribed     = false;
-  bool calculate_circumscribed = false;
 
   adios2::Variable<double> vAtoms;
   adios2::Variable<uint64_t> vNt;
@@ -154,38 +145,13 @@ struct Application {
 
   std::vector<double> atoms;
   std::vector<double> x, y, z;    // raw dimensional coordinates
-  std::vector<double> sx, sy, sz;
+  // std::vector<double> sx, sy, sz;
   std::vector<double> sr;
   std::vector<size_t> idlist;
-  std::vector<double> coords;
-  std::vector<double> temp_coords;
-  std::vector<bool> inside;
-  std::vector<double> fcx, fcy, fcz;    // atom dimensional coordinates relative to the cell center
-  std::vector<double> cx1, cy1, cz1;    // same as fc, but for image x->x-Lx
-  std::vector<double> cx2, cy2, cz2;    // same as fc, but for image x->x+Lx
-  std::vector<double> cx3, cy3, cz3;    // same as fc, but for image y->y-Ly
-  std::vector<double> cx4, cy4, cz4;    // same as fc, but for image y->y+Ly
-  std::vector<double> cx5, cy5, cz5;    // same as fc, but for image z->z-Lz
-  std::vector<double> cx6, cy6, cz6;    // same as fc, but for image z->z+Lz
-  std::array<std::array<std::vector<double>*, 3>, 7> vcs = {
-      std::array<std::vector<double>*, 3>({&fcx, &fcy, &fcz}), std::array<std::vector<double>*, 3>({&cx1, &cy1, &cz1}),
-      std::array<std::vector<double>*, 3>({&cx2, &cy2, &cz2}), std::array<std::vector<double>*, 3>({&cx3, &cy3, &cz3}),
-      std::array<std::vector<double>*, 3>({&cx4, &cy4, &cz4}), std::array<std::vector<double>*, 3>({&cx5, &cy5, &cz5}),
-      std::array<std::vector<double>*, 3>({&cx6, &cy6, &cz6})};    // for convinience of iteration
-  std::vector<bool> ninside_original;                              // ninside[i] == false -> inside; whether atom is inside circumscribed sphere
-  std::vector<bool> ninside1;    // ninside[i] == false -> inside; whether image x->x-Lx is inside circumscribed sphere
-  std::vector<bool> ninside2;    // ninside[i] == false -> inside; whether image x->x+Lx is inside circumscribed sphere
-  std::vector<bool> ninside3;    // ninside[i] == false -> inside; whether image y->y-Ly is inside circumscribed sphere
-  std::vector<bool> ninside5;    // ninside[i] == false -> inside; whether image y->y+Ly is inside circumscribed sphere
-  std::vector<bool> ninside4;    // ninside[i] == false -> inside; whether image z->z-Lz is inside circumscribed sphere
-  std::vector<bool> ninside6;    // ninside[i] == false -> inside; whether image z->z+Lz is inside circumscribed sphere
-  std::array<std::vector<bool>*, 7> ninside = {&ninside_original, &ninside1, &ninside2, &ninside3,
-                                               &ninside4,         &ninside5, &ninside6};    // for convinience of iteration
   std::vector<double> counts;    // radial distribution function (rdf), but only raw counts, unnormalized
 
   uint64_t timestep = 0;
   size_t N          = 0;    // atom number in cell
-  size_t N3         = 0;
   Box box;             // cell
   double rmax  = 0;    // max distance to calculate rdf
   size_t nbins = 0;    // number of bins for rdf
@@ -193,14 +159,9 @@ struct Application {
 
   size_t Ni    = 0;    // number of atoms inside inscribed sphere, calculated from geometry
   size_t Nri   = 0;    // number of atoms inside inscribed sphere, counted from dataa
-  size_t Nc    = 0;    // number of atoms inside circumscribed sphere, calculated from geometry
-  size_t Nrc   = 0;    // number of atoms inside circumscribed sphere, counted from dataa
   double upexi = 0;    // energies for inscribed sphere
   double ubexi = 0;    // energies for inscribed sphere
   double uci   = 0;    // energies for inscribed sphere
-  double upexc = 0;    // energies for circumscribed sphere
-  double ubexc = 0;    // energies for circumscribed sphere
-  double ucc   = 0;    // energies for circumscribed sphere
 };
 
 namespace COLS {
