@@ -1,0 +1,42 @@
+%YAML 1.1
+---
+Checks:
+- -*
+- bugprone-*
+- concurrency-*
+- hicpp-*
+- modernize-*
+- performance-*
+- readability-*
+- llvm-*
+- misc-*
+- mpi-*
+- openmp-*
+- cppcoreguidelines-*
+- -readability-magic-numbers
+- -readability-function-cognitive-complexity
+- -readability-identifier-length
+- -readability-math-missing-parentheses
+- -readability-avoid-const-params-in-decls
+- -readability-isolate-declaration
+- -readability-use-concise-preprocessor-directives
+- -modernize-use-trailing-return-type
+- -modernize-return-braced-init-list
+- -hicpp-signed-bitwise
+- -llvm-header-guard
+- -llvm-prefer-static-over-anonymous-namespace
+- -bugprone-easily-swappable-parameters
+- -cppcoreguidelines-avoid-magic-numbers
+- -cppcoreguidelines-pro-bounds-pointer-arithmetic
+- -cppcoreguidelines-non-private-member-variables-in-classes
+- -misc-non-private-member-variables-in-classes
+FormatStyle: file
+HeaderFileExtensions:
+- h
+- hpp
+- hxx
+ImplementationFileExtensions:
+- c
+- cpp
+- cxx
+InheritParentConfig: false

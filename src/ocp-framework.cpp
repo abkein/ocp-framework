@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -28,7 +29,7 @@ namespace {
 
   [[nodiscard]] inline double N_in_sphere(const size_t N, const Box& box, const double radius)
   {
-    const double sphere_volume = (4.0 / 3.0) * PI * radius * radius * radius;
+    const double sphere_volume = (4.0 / 3.0) * std::numbers::pi * radius * radius * radius;
     return static_cast<double>(N) * sphere_volume / box.V;
   }
 
@@ -60,17 +61,13 @@ namespace {
   }
 }    // namespace
 
-Application::Application(const Options& options)
+Application::Application(const Options& options) :
+    info(options.info), adios(adios2::ADIOS(options.adiosConfig)), calculate_rdf(options.calculate_rdf),
+    calculate_inscribed(options.calculate_inscribed), calculate_circumscribed(options.calculate_circumscribed), gamma(options.gamma)
 {
-  calculate_rdf           = options.calculate_rdf;
-  calculate_inscribed     = options.calculate_inscribed;
-  calculate_circumscribed = options.calculate_circumscribed;
-  if (!(calculate_rdf || calculate_inscribed || calculate_circumscribed)) { throw std::runtime_error("Need at least one calculation specified."); }
+  io = adios.DeclareIO(options.ioName);
 
-  info    = options.info;
-  gamma   = options.gamma;
-  adios   = adios2::ADIOS(options.adiosConfig);
-  io      = adios.DeclareIO(options.ioName);
+  if (!(calculate_rdf || calculate_inscribed || calculate_circumscribed)) { throw std::runtime_error("Need at least one calculation specified."); }
 
   // Read file
   reader  = io.Open(options.bpFile, adios2::Mode::Read);
@@ -92,9 +89,9 @@ void Application::prepare_data()
 {
   // BP5 exposes metadata only after BeginStep(). Refresh handles per step.
   // Attributes (constant across steps)
-  if (auto a = io.InquireAttribute<int32_t>("scaled"); a) { scaled = a.Data()[0]; }
+  if (auto const a = io.InquireAttribute<int32_t>("scaled"); a) { scaled = a.Data()[0]; }
 
-  if (auto a = io.InquireAttribute<int32_t>("triclinic"); a) { triclinic = a.Data()[0]; }
+  if (auto const a = io.InquireAttribute<int32_t>("triclinic"); a) { triclinic = a.Data()[0]; }
   if (triclinic != 0) { throw std::runtime_error("triclinic=1 is not supported by this program (needs tilt factors)."); }
 
   // Inquire variables
@@ -224,7 +221,7 @@ void Application::circumscribed()
     for (int iy = -ny; iy <= ny; ++iy) {
       for (int iz = -nz; iz <= nz; ++iz) {
         for (size_t i = 0; i < N; ++i) {
-          const Point p{x[i] + ix * box.Lx, y[i] + iy * box.Ly, z[i] + iz * box.Lz};
+          const Point p{.x = x[i] + ix * box.Lx, .y = y[i] + iy * box.Ly, .z = z[i] + iz * box.Lz};
           const double rsq = p.x * p.x + p.y * p.y + p.z * p.z;
           if (rsq <= Rsq) {
             points.push_back(p);
