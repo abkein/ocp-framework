@@ -121,6 +121,13 @@ from the trajectory.
 
 # Running and output
 
+Each step writes `timestep,N,V,rmax,nbins,T` to `metadata.csv`; use
+`--meta-out path.csv` to change this filename. `observables.csv` (configurable
+with `--obs-out`) contains `timestep` and the sphere observables, so the files
+can be joined by timestep. Neither file includes `dr` or `Gamma`: `dr` is the
+constant CLI bin width, and $\Gamma=1/T$. The metadata always reports
+`rmax = 0.5 * min(Lx,Ly,Lz)`; `nbins` is zero when RDF calculation is disabled.
+
 Use `-i` for the inscribed sphere and `-c` for the circumscribed sphere;
 the options can be combined. `Ni` and `Nc` in `observables.csv` are mean
 populations, while `Nri` and `Nrc` are actual selected counts. The circumscribed
@@ -133,10 +140,10 @@ They are calculated automatically with `-i` and `-c`. A disabled sphere has
 and zero excess pressure.
 
 The optional `--gamma Gamma` argument must be finite and positive, with a
-representable finite positive reciprocal. It appends values in columns
-`Gamma,T,pi,Zi,pc,Zc`: the coupling parameter, inferred temperature, and total
-pressure and compressibility factor for each sphere. Without `--gamma`, these
-columns contain `nan`; pressure and compressibility also contain `nan` for a
+representable finite positive reciprocal. The inferred temperature `T` is
+written to the metadata file; `pi,Zi,pc,Zc` in the observables file contain
+total pressure and compressibility factor for each sphere. Without `--gamma`,
+these values contain `nan`; pressure and compressibility also contain `nan` for a
 disabled sphere. The existing virial and excess-pressure columns are independent
 of `--gamma`. Zero virial gives $p_s=nT$ and $Z_{\mathrm{ion},s}=1$.
 
@@ -148,6 +155,11 @@ ocp-framework dumps/dump.bp --config "" -i -c --gamma 10
 
 `--rdf dr` produces per-ion pair counts in radial bins of width `dr`, using
 minimum-image distances. Distances at or above `rmax` are excluded, including
-from a partially filled final bin. Both `--rmax` and `--rmax-frac` are capped
-at half the shortest box edge. These counts are not normalized by density and
-shell volume to produce $g(r)$.
+from a partially filled final bin. The range is fixed at half the shortest box
+edge; there are no `--rmax` or `--rmax-frac` options. These counts are not
+normalized by density and shell volume to produce $g(r)$.
+
+In each step, `prepare_data()` reads the frame and completes the pending reads.
+`run()` then calls `reader.EndStep()` immediately, followed by `modify_data()`
+to convert coordinates and calculate squared distances from the box center,
+then `calculate()` and `write()`.

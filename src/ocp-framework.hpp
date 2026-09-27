@@ -18,18 +18,12 @@
 
 using size_t = std::size_t;
 
-struct SDInfo {
-  double rmax     = -1.0;    // if < 0: use rmaxFrac * min(L)
-  double rmaxFrac = 0.5;     // default: min(L)/2
-  double dr       = -1.0;    //
-};
-
 struct Options {
   Options(int argc, char** argv)
   {
     const std::string usage = "Usage: ocp-framework <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
                               "                              [--obs-out observables.csv] [--rdf-out rdf.csv]\n"
-                              "                              [--rdf dr] [--rmax 0.0] [--rmax-frac 0.5]\n"
+                              "                              [--meta-out metadata.csv] [--rdf dr]\n"
                               "                              [-i] [-c] [--gamma Gamma]\n";
     if (argc < 2) { throw std::runtime_error(usage); }
     const std::string firstarg = argv[1];
@@ -43,20 +37,16 @@ struct Options {
         adiosConfig = need_value(argc, argv, i);
       } else if (a == "--io") {
         ioName = need_value(argc, argv, i);
-      } else if (a == "--rmax") {
-        info.rmax = std::stod(need_value(argc, argv, i));
-        if (info.rmax <= 0.0) { throw std::runtime_error("--rmax must be > 0"); }
-      } else if (a == "--rmax-frac") {
-        info.rmaxFrac = std::stod(need_value(argc, argv, i));
-        if (info.rmaxFrac <= 0.0) { throw std::runtime_error("--rmax-frac must be > 0"); }
       } else if (a == "--rdf") {
         calculate_rdf = true;
-        info.dr       = std::stod(need_value(argc, argv, i));
-        if (info.dr <= 0.0) { throw std::runtime_error("dr must be > 0"); }
+        dr            = std::stod(need_value(argc, argv, i));
+        if (dr <= 0.0) { throw std::runtime_error("dr must be > 0"); }
       } else if (a == "--obs-out") {
         csv_out = need_value(argc, argv, i);
       } else if (a == "--rdf-out") {
         rdf_out = need_value(argc, argv, i);
+      } else if (a == "--meta-out") {
+        metadata_out = need_value(argc, argv, i);
       } else if (a == "-i") {
         calculate_inscribed = true;
       } else if (a == "-c") {
@@ -79,7 +69,7 @@ struct Options {
     }
   }
 
-  SDInfo info{};
+  double dr    = -1.0;
   double gamma = std::numeric_limits<double>::quiet_NaN();
 
   std::string bpFile;
@@ -88,6 +78,7 @@ struct Options {
 
   std::string csv_out          = "observables.csv";
   std::string rdf_out          = "rdf.csv";
+  std::string metadata_out     = "metadata.csv";
 
   bool calculate_rdf           = false;
   bool calculate_inscribed     = false;
@@ -134,13 +125,12 @@ struct Application {
 
   void run();
   void prepare_data();
+  void modify_data();
   void calculate();
   void write();
   void compute_rdf_celllist();
   void inscribed();
   void circumscribed();
-
-  SDInfo info{};
 
   adios2::ADIOS adios;
   adios2::IO io;
@@ -149,6 +139,7 @@ struct Application {
   int32_t triclinic = 0;
   std::ofstream out_csv;
   std::ofstream out_rdf;
+  std::ofstream out_meta;
 
   bool calculate_rdf           = false;
   bool calculate_inscribed     = false;

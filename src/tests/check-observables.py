@@ -59,22 +59,25 @@ def check_virial(row, points, mean, density, suffix, gamma):
         close(row["Z" + suffix], pressure * sphere_volume / (mean * temperature), "compressibility " + suffix)
 
 
-def check_frame(row, rdf, points, lengths, step, cutoff, dr, inscribed, circumscribed, gamma):
+def check_frame(row, metadata, rdf, points, lengths, step, dr, inscribed, circumscribed, gamma):
+    cutoff = min(lengths) / 2
+    close(metadata["timestep"], step, "metadata timestep")
+    close(metadata["rmax"], cutoff, "rmax")
+    close(metadata["nbins"], math.ceil(cutoff / dr) if rdf is not None else 0, "nbins")
     if gamma is None:
-        if not all(math.isnan(float(row[key])) for key in ("Gamma", "T")):
-            raise AssertionError("Missing gamma and temperature must be reported as nan")
+        if not math.isnan(float(metadata["T"])):
+            raise AssertionError("Missing temperature must be reported as nan")
     else:
-        close(row["Gamma"], gamma, "Gamma")
-        close(row["T"], 1 / gamma, "T")
+        close(metadata["T"], 1 / gamma, "T")
     for suffix, enabled in (("i", inscribed), ("c", circumscribed)):
         if not enabled:
             for key in ("virial" + suffix, "pex" + suffix, "p" + suffix, "Z" + suffix):
                 if not math.isnan(float(row[key])):
                     raise AssertionError(f"Disabled quantity {key} must be nan")
     close(row["timestep"], step, "timestep")
-    close(row["N"], len(points), "N")
+    close(metadata["N"], len(points), "N")
     volume = math.prod(lengths)
-    close(row["V"], volume, "volume")
+    close(metadata["V"], volume, "volume")
     if inscribed:
         radius = min(lengths) / 2
         inside = [p for p in points if math.fsum(v * v for v in p) <= radius**2]
@@ -100,9 +103,7 @@ def check_frame(row, rdf, points, lengths, step, cutoff, dr, inscribed, circumsc
             close(row[key], value, key)
         check_virial(row, inside, mean, len(points) / volume, "c", gamma)
     if rdf is not None:
-        close(row["rmax"], cutoff, "rmax")
         bins = math.ceil(cutoff / dr)
-        close(row["nbins"], bins, "nbins")
         expected = [0.0] * bins
         for a, b in itertools.combinations(points, 2):
             distance = math.sqrt(sum(
@@ -119,7 +120,7 @@ def check_frame(row, rdf, points, lengths, step, cutoff, dr, inscribed, circumsc
 
 
 def run_case(root, frames, lengths=(4, 4, 4), center=(0, 0, 0), scaled=False,
-             flags=("-i", "-c", "--rdf", "0.5"), cutoff=2, dr=0.5, gamma=None):
+             flags=("-i", "-c", "--rdf", "0.5"), dr=0.5, gamma=None, metadata_out=None):
     dump = root / "dump.bp"
     header = [int(scaled), *lengths, *center]
     lines = [" ".join(map(str, header))]
@@ -129,9 +130,23 @@ def run_case(root, frames, lengths=(4, 4, 4), center=(0, 0, 0), scaled=False,
     subprocess.run([writer, str(dump)], input="\n".join(lines), text=True, check=True)
     # An empty configuration path selects ADIOS2 defaults.
     gamma_args = [] if gamma is None else ["--gamma", str(gamma)]
-    subprocess.run([program, str(dump), "--config", "", *flags, *gamma_args], cwd=root, check=True)
+    metadata_args = [] if metadata_out is None else ["--meta-out", metadata_out]
+    subprocess.run([program, str(dump), "--config", "", *flags, *gamma_args, *metadata_args], cwd=root, check=True)
     with (root / "observables.csv").open() as stream:
-        rows = list(csv.DictReader(stream))
+        reader = csv.DictReader(stream)
+        expected_columns = "timestep,Ni,Nri,upexi,ubexi,uci,Nc,Nrc,upexc,ubexc,ucc,viriali,pexi,virialc,pexc,pi,Zi,pc,Zc".split(",")
+        if reader.fieldnames != expected_columns:
+            raise AssertionError(f"Unexpected observables columns: {reader.fieldnames}")
+        rows = list(reader)
+    with (root / (metadata_out or "metadata.csv")).open() as stream:
+        reader = csv.DictReader(stream)
+        if reader.fieldnames != ["timestep", "N", "V", "rmax", "nbins", "T"]:
+            raise AssertionError(f"Unexpected metadata columns: {reader.fieldnames}")
+        metadata_rows = list(reader)
+    if len(metadata_rows) != len(frames):
+        raise AssertionError("Unexpected metadata frame count")
+    if metadata_out is not None and (root / "metadata.csv").exists():
+        raise AssertionError("Default metadata file created despite --meta-out")
     if len(rows) != len(frames):
         raise AssertionError("Unexpected frame count")
     rdf = None
@@ -141,7 +156,7 @@ def run_case(root, frames, lengths=(4, 4, 4), center=(0, 0, 0), scaled=False,
         if len(rdf) != len(frames):
             raise AssertionError("Unexpected RDF frame count")
     for step, (row, frame) in enumerate(zip(rows, frames)):
-        check_frame(row, rdf[step] if rdf else None, frame, lengths, step, cutoff, dr,
+        check_frame(row, metadata_rows[step], rdf[step] if rdf else None, frame, lengths, step, dr,
                     "-i" in flags, "-c" in flags, gamma)
 
 
@@ -159,15 +174,15 @@ frames = [
 ]
 cases = [
     {},
-    {"gamma": 5},
+    {"gamma": 5, "metadata_out": "frames.csv"},
     {"gamma": 0.25, "scaled": True, "center": (3, -2, 7)},
     {"scaled": True, "center": (3, -2, 7)},
     {"center": (3, -2, 7)},
     {"flags": ("-c",), "gamma": 15},
     {"flags": ("-i",), "gamma": 2},
-    {"flags": ("--rdf", "0.6", "--rmax", "1.7"), "dr": 0.6, "cutoff": 1.7},
-    {"flags": ("--rdf", "0.5", "--rmax-frac", "0.9"), "gamma": 4},
-    {"flags": ("--rdf", "0.5", "--rmax", "10")},
+    {"flags": ("--rdf", "0.6"), "dr": 0.6},
+    {"flags": ("--rdf", "0.5"), "gamma": 4},
+    {"flags": ("--rdf", "3"), "dr": 3},
 ]
 with tempfile.TemporaryDirectory(prefix="ocp-regression-") as directory:
     for index, case in enumerate(cases):
@@ -176,7 +191,7 @@ with tempfile.TemporaryDirectory(prefix="ocp-regression-") as directory:
         run_case(root, frames, **case)
     root = Path(directory) / "rectangular"
     root.mkdir()
-    run_case(root, [[(0, 0, 0), (0.4, 1.8, 2.9)]], lengths=(1, 4, 6), cutoff=0.5, gamma=3)
+    run_case(root, [[(0, 0, 0), (0.4, 1.8, 2.9)]], lengths=(1, 4, 6), gamma=3)
     for value in ("0", "-1", "nan", "inf", "-inf", "1oops", "abc", "1e999", "1e-999"):
         result = subprocess.run([program, "unused.bp", "-i", "--gamma", value],
                                 capture_output=True, text=True)
@@ -185,4 +200,9 @@ with tempfile.TemporaryDirectory(prefix="ocp-regression-") as directory:
     result = subprocess.run([program, "unused.bp", "-i", "--gamma"], capture_output=True, text=True)
     if result.returncode == 0 or "Missing value after --gamma" not in result.stderr:
         raise AssertionError("Missing gamma value accepted or misdiagnosed")
-print(f"Passed {len(cases) * len(frames) + 1} frame checks and 10 invalid-gamma checks.")
+    for flag in ("--rmax", "--rmax-frac"):
+        result = subprocess.run([program, "unused.bp", "--rdf", "0.5", flag, "1"],
+                                capture_output=True, text=True)
+        if result.returncode == 0 or f"Unknown argument: {flag}" not in result.stderr:
+            raise AssertionError(f"Removed option still accepted or misdiagnosed: {flag}")
+print(f"Passed {len(cases) * len(frames) + 1} frame checks and 12 invalid-argument checks.")

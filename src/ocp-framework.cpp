@@ -62,8 +62,8 @@ namespace {
 }    // namespace
 
 Application::Application(const Options& options) :
-    info(options.info), adios(adios2::ADIOS(options.adiosConfig)), calculate_rdf(options.calculate_rdf),
-    calculate_inscribed(options.calculate_inscribed), calculate_circumscribed(options.calculate_circumscribed), gamma(options.gamma)
+    adios(adios2::ADIOS(options.adiosConfig)), calculate_rdf(options.calculate_rdf), calculate_inscribed(options.calculate_inscribed),
+    calculate_circumscribed(options.calculate_circumscribed), dr(options.dr), gamma(options.gamma)
 {
   io = adios.DeclareIO(options.ioName);
 
@@ -76,7 +76,12 @@ Application::Application(const Options& options) :
   out_csv = std::ofstream(options.csv_out);
   if (!out_csv) { throw std::runtime_error("Cannot open " + options.csv_out); }
   out_csv << std::setprecision(std::numeric_limits<double>::max_digits10);
-  out_csv << "timestep,N,V,rmax,dr,nbins,Ni,Nri,upexi,ubexi,uci,Nc,Nrc,upexc,ubexc,ucc,viriali,pexi,virialc,pexc,Gamma,T,pi,Zi,pc,Zc\n";
+  out_csv << "timestep,Ni,Nri,upexi,ubexi,uci,Nc,Nrc,upexc,ubexc,ucc,viriali,pexi,virialc,pexc,pi,Zi,pc,Zc\n";
+
+  out_meta = std::ofstream(options.metadata_out);
+  if (!out_meta) { throw std::runtime_error("Cannot open " + options.metadata_out); }
+  out_meta << std::setprecision(std::numeric_limits<double>::max_digits10);
+  out_meta << "timestep,N,V,rmax,nbins,T\n";
 
   if (calculate_rdf) {
     out_rdf = std::ofstream(options.rdf_out);
@@ -133,8 +138,10 @@ void Application::prepare_data()
 
   reader.Get(vAtoms, atoms.data());
   reader.PerformGets();
-  reader.EndStep();
+}
 
+void Application::modify_data()
+{
   x.reserve(N);
   x.resize(N);
   y.reserve(N);
@@ -157,6 +164,14 @@ void Application::prepare_data()
       y[i] = atoms[COLS::NUM_COLS * i + COLS::Y];
       z[i] = atoms[COLS::NUM_COLS * i + COLS::Z];
     }
+  }
+
+  sr.resize(N);
+  for (size_t i = 0; i < N; ++i) {
+    x[i] -= box.cx;
+    y[i] -= box.cy;
+    z[i] -= box.cz;
+    sr[i] = x[i] * x[i] + y[i] * y[i] + z[i] * z[i];
   }
 }
 
@@ -249,15 +264,8 @@ void Application::circumscribed()
 
 void Application::calculate()
 {
+  rmax = 0.5 * box.L_min;
   if (calculate_rdf) { compute_rdf_celllist(); }
-
-  sr.resize(N);
-  for (size_t i = 0; i < N; ++i) {
-    x[i] -= box.cx;
-    y[i] -= box.cy;
-    z[i] -= box.cz;
-    sr[i] = x[i] * x[i] + y[i] * y[i] + z[i] * z[i];
-  }
 
   if (calculate_inscribed) { inscribed(); }
   if (calculate_circumscribed) { circumscribed(); }
@@ -265,10 +273,11 @@ void Application::calculate()
 
 void Application::write()
 {
-  out_csv << timestep << "," << N << "," << box.V << "," << rmax << "," << dr << "," << nbins << "," << Ni << "," << Nri << "," << upexi << ","
-          << ubexi << "," << uci << "," << Nc << "," << Nrc << "," << upexc << "," << ubexc << "," << ucc << "," << viriali.virial << ","
-          << viriali.excess_pressure << "," << virialc.virial << "," << virialc.excess_pressure << "," << gamma << "," << 1.0 / gamma << ","
-          << viriali.pressure << "," << viriali.compressibility << "," << virialc.pressure << "," << virialc.compressibility << "\n";
+  out_meta << timestep << "," << N << "," << box.V << "," << rmax << "," << nbins << "," << 1.0 / gamma << "\n";
+  out_meta.flush();
+  out_csv << timestep << "," << Ni << "," << Nri << "," << upexi << "," << ubexi << "," << uci << "," << Nc << "," << Nrc << "," << upexc << ","
+          << ubexc << "," << ucc << "," << viriali.virial << "," << viriali.excess_pressure << "," << virialc.virial << "," << virialc.excess_pressure
+          << "," << viriali.pressure << "," << viriali.compressibility << "," << virialc.pressure << "," << virialc.compressibility << "\n";
   out_csv.flush();
   if (calculate_rdf) {
     out_rdf << timestep;
@@ -285,7 +294,9 @@ void Application::run()
     if (status != adios2::StepStatus::OK) { break; }
 
     prepare_data();
+    reader.EndStep();
 
+    modify_data();
     calculate();
     write();
   }
@@ -293,11 +304,7 @@ void Application::run()
 
 void Application::compute_rdf_celllist()
 {
-  // enforce safe maximum for minimum-image RDF
-  const double requested_rmax = info.rmax <= 0.0 ? info.rmaxFrac * box.L_min : info.rmax;
-  rmax                        = std::min(requested_rmax, 0.5 * box.L_min);
-  dr                          = info.dr;
-  nbins                       = std::max<size_t>(1, static_cast<size_t>(std::ceil(rmax / dr)));
+  nbins = std::max<size_t>(1, static_cast<size_t>(std::ceil(rmax / dr)));
   counts.resize(nbins);
   counts.assign(nbins, 0);
   if (N < 2) { return; }
@@ -319,6 +326,7 @@ void Application::compute_rdf_celllist()
 Application::~Application()
 {
   out_csv.close();
+  out_meta.close();
   if (calculate_rdf) { out_rdf.close(); }
   reader.Close();
 }
