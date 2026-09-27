@@ -38,7 +38,7 @@ mass 1 ${ms}
 
 set group all charge $(v_Z)
 
-dump DUMP all atom/adios ${dmpfreq} dumps/dump.bp
+dump dumpADIOS all custom/adios ${dmpfreq} dump.bp id x y z vx vy vz
 thermo_style custom step temp ecoul epair etotal pe press
 thermo ${dmpfreq}
 
@@ -46,6 +46,11 @@ timestep ${tss}
 
 velocity all create $(v_T) ${SEED_II} dist gaussian sum no mom yes rot yes loop geom units box
 
+fix BERENDSENFIX all temp/berendsen $(v_T) $(v_T) 3.0
 fix NVEFIX all nve
 
-run 1000000
+run 100000
+
+unfix BERENDSENFIX
+
+run 3900000
