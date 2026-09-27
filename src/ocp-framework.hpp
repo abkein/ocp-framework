@@ -104,9 +104,8 @@ struct Box {
   Box() = default;
   constexpr Box(double xlo, double xhi, double ylo, double yhi, double zlo, double zhi) :
       xlo(xlo), xhi(xhi), ylo(ylo), yhi(yhi), zlo(zlo), zhi(zhi), Lx(xhi - xlo), Ly(yhi - ylo), Lz(zhi - zlo), V(Lx * Ly * Lz), cx(xlo + 0.5 * Lx),
-      cy(ylo + 0.5 * Ly), cz(zlo + 0.5 * Lz), L_average((Lx + Ly + Lz) * (1.0 / 3.0))
+      cy(ylo + 0.5 * Ly), cz(zlo + 0.5 * Lz), L_average((Lx + Ly + Lz) * (1.0 / 3.0)), L_min(std::min({Lx, Ly, Lz}))
   {
-    L_min = std::min({Lx, Ly, Lz});
   }
   double xlo{}, xhi{}, ylo{}, yhi{}, zlo{}, zhi{};
   double Lx{}, Ly{}, Lz{};

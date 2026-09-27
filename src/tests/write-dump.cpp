@@ -1,6 +1,9 @@
-#include <adios2.h>
+#include <adios2/common/ADIOSTypes.h>
+#include <adios2/cxx/ADIOS.h>
+#include <adios2/cxx/Variable.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
@@ -10,8 +13,8 @@
 int main(int argc, char** argv)
 {
   if (argc != 2) { return 1; }
-  int32_t scaled;
-  std::array<double, 3> lengths, center;
+  int32_t scaled = 0;
+  std::array<double, 3> lengths{}, center{};
   std::cin >> scaled;
   for (auto& value : lengths) { std::cin >> value; }
   for (auto& value : center) { std::cin >> value; }
@@ -26,18 +29,19 @@ int main(int argc, char** argv)
   auto timestep = io.DefineVariable<uint64_t>("ntimestep");
   const std::array<const char*, 6> names{"boxxlo", "boxxhi", "boxylo", "boxyhi", "boxzlo", "boxzhi"};
   std::vector<adios2::Variable<double>> bounds;
-  for (const auto name : names) { bounds.push_back(io.DefineVariable<double>(name)); }
+  bounds.reserve(names.size());
+  for (const auto* const name : names) { bounds.push_back(io.DefineVariable<double>(name)); }
   auto writer = io.Open(argv[1], adios2::Mode::Write);
-  uint64_t n, step = 0;
+  uint64_t n{}, step = 0;
   while (std::cin >> n) {
     std::vector<double> data(n * 5);
     for (size_t i = 0; i < n; ++i) {
       data[5 * i]     = i + 1;
       data[5 * i + 1] = 1;
       for (size_t axis = 0; axis < 3; ++axis) {
-        double coordinate;
+        double coordinate{};
         if (!(std::cin >> coordinate)) { throw std::runtime_error("Incomplete frame"); }
-        data[5 * i + 2 + axis] = scaled ? coordinate / lengths[axis] + 0.5 : coordinate + center[axis];
+        data[5 * i + 2 + axis] = (scaled != 0) ? coordinate / lengths[axis] + 0.5 : coordinate + center[axis];
       }
     }
     writer.BeginStep();
