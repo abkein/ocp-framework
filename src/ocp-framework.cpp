@@ -6,6 +6,7 @@
 #include <adios2/cxx/IO.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -25,8 +26,8 @@ namespace {
   // JSON filenames may contain quotes, backslashes, and control characters.
   [[nodiscard]] std::string json_string(const std::string& value)
   {
-    constexpr char hex[] = "0123456789abcdef";
-    std::string result   = "\"";
+    constexpr std::array<char, 16> hex{{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'}};
+    std::string result = "\"";
     for (const unsigned char c : value) {
       if (c == '"' || c == '\\') {
         result += '\\';

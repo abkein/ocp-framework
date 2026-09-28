@@ -68,13 +68,13 @@ struct Options {
           throw std::runtime_error(error);
         }
       } else if (a == "c") {
-        spheres.push_back({std::sqrt(3.0), true});
+        spheres.push_back({std::numbers::sqrt3, true});
       } else if (a.starts_with("-")) {
         throw std::runtime_error("Unknown argument: " + a);
       } else {
         const char* error = "Sphere multiplier must be finite and in (0,3), or c";
         size_t consumed   = 0;
-        double rfrac;
+        double rfrac{};
         try {
           rfrac = std::stod(a, &consumed);
         } catch (const std::logic_error&) {
