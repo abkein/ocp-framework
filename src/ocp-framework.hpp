@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -29,7 +30,7 @@ struct Options {
     const std::string usage = "Usage: ocp-framework <file.bp> [rfrac ...] [--config adios2_config.xml] [--io read_dump]\n"
                               "                              [--obs-out observables.csv] [--rdf-out rdf.csv]\n"
                               "                              [--meta-out metadata.csv] [--rdf dr]\n"
-                              "                              [--spheres-out spheres.json] [--gamma Gamma]\n"
+                              "                              [--spheres-out spheres.json] [--mass mass]\n"
                               "  rfrac: multiplier in (0,3), or c for sqrt(3)\n";
     if (argc < 2) { throw std::runtime_error(usage); }
     const std::string firstarg = argv[1];
@@ -55,18 +56,16 @@ struct Options {
         metadata_out = need_value(argc, argv, i);
       } else if (a == "--spheres-out") {
         spheres_out = need_value(argc, argv, i);
-      } else if (a == "--gamma") {
+      } else if (a == "--mass") {
         const auto value  = need_value(argc, argv, i);
-        const char* error = "--gamma must be finite and > 0, with a finite positive 1/Gamma";
+        const char* error = "--mass must be finite and > 0";
         size_t consumed   = 0;
         try {
-          gamma = std::stod(value, &consumed);
+          mass = std::stod(value, &consumed);
         } catch (const std::logic_error&) {
           throw std::runtime_error(error);
         }
-        if (consumed != value.size() || !std::isfinite(gamma) || gamma <= 0.0 || !std::isfinite(1.0 / gamma) || 1.0 / gamma <= 0.0) {
-          throw std::runtime_error(error);
-        }
+        if (consumed != value.size() || !std::isfinite(mass) || mass <= 0.0) { throw std::runtime_error(error); }
       } else if (a == "c") {
         spheres.push_back({std::numbers::sqrt3, true});
       } else if (a.starts_with("-")) {
@@ -87,8 +86,8 @@ struct Options {
     if (!calculate_rdf && spheres.empty()) { throw std::runtime_error("Need at least one sphere or --rdf specified."); }
   }
 
-  double dr    = -1.0;
-  double gamma = std::numeric_limits<double>::quiet_NaN();
+  double dr   = -1.0;
+  double mass = 1.0;
 
   std::string bpFile;
   std::string adiosConfig  = "adios2_config.xml";
@@ -155,6 +154,8 @@ struct Application {
   void prepare_data();
   void modify_data();
   void calculate();
+  void compute_temperature();
+  void compute_center_of_mass_velocity();
   void write();
   void compute_rdf_celllist();
   void inscribed(Sphere& sphere);
@@ -182,9 +183,9 @@ struct Application {
   adios2::Variable<double> vZhi;
 
   std::vector<double> atoms;
-  std::vector<double> x, y, z;    // raw dimensional coordinates
-  // std::vector<double> sx, sy, sz;
-  std::vector<double> sr;    // squared distances from cell center
+  std::vector<double> x, y, z;       // raw dimensional coordinates
+  std::vector<double> vx, vy, vz;    // velocities in simulation units
+  std::vector<double> sr;            // squared distances from cell center
   std::vector<size_t> idlist;
   std::vector<double> counts;    // radial distribution function (rdf), but only raw counts, unnormalized
 
@@ -197,16 +198,22 @@ struct Application {
 
   std::vector<Sphere> spheres;
   std::string spheres_out;
-  double gamma = std::numeric_limits<double>::quiet_NaN();
+  double mass        = 1.0;
+  double temperature = std::numeric_limits<double>::quiet_NaN();
+  double cvx         = std::numeric_limits<double>::quiet_NaN();
+  double cvy         = std::numeric_limits<double>::quiet_NaN();
+  double cvz         = std::numeric_limits<double>::quiet_NaN();
 };
 
 namespace COLS {
-  constexpr int NUM_COLS  = 5;
-  constexpr int ATOM_ID   = 0;
-  constexpr int ATOM_TYPE = 1;
-  constexpr int X         = 2;
-  constexpr int Y         = 3;
-  constexpr int Z         = 4;
+  constexpr int NUM_COLS = 7;
+  constexpr int ATOM_ID  = 0;
+  constexpr int X        = 1;
+  constexpr int Y        = 2;
+  constexpr int Z        = 3;
+  constexpr int VX       = 4;
+  constexpr int VY       = 5;
+  constexpr int VZ       = 6;
 }    // namespace COLS
 
 struct CenterOfMass {

@@ -70,16 +70,16 @@ namespace {
   }
 
   [[nodiscard]] SphereVirial sphere_virial(const double mean_population, const double pair_sum, const double radius_sum, const double density,
-                                           const double gamma)
+                                           const double temperature)
   {
     SphereVirial result;
     if (mean_population == 0.0) { return result; }
     // Coulomb pairs contribute +1/r; the background force -r contributes -r^2.
     result.virial          = (pair_sum - radius_sum) / (3.0 * mean_population);
     result.excess_pressure = density * result.virial;
-    if (std::isfinite(gamma)) {
-      result.pressure        = density * (1.0 / gamma + result.virial);
-      result.compressibility = 1.0 + gamma * result.virial;
+    if (std::isfinite(temperature)) {
+      result.pressure = density * (temperature + result.virial);
+      if (temperature > 0.0) { result.compressibility = 1.0 + result.virial / temperature; }
     }
     return result;
   }
@@ -87,7 +87,7 @@ namespace {
 
 Application::Application(const Options& options) :
     adios(adios2::ADIOS(options.adiosConfig)), calculate_rdf(options.calculate_rdf), dr(options.dr), spheres_out(options.spheres_out),
-    gamma(options.gamma)
+    mass(options.mass)
 {
   io     = adios.DeclareIO(options.ioName);
   reader = io.Open(options.bpFile, adios2::Mode::Read);
@@ -109,7 +109,7 @@ Application::Application(const Options& options) :
   out_meta = std::ofstream(options.metadata_out);
   if (!out_meta) { throw std::runtime_error("Cannot open " + options.metadata_out); }
   out_meta << std::setprecision(std::numeric_limits<double>::max_digits10);
-  out_meta << "timestep,N,V,rmax,nbins,T\n";
+  out_meta << "timestep,N,V,rmax,nbins,T,cvx,cvy,cvz\n";
 
   if (calculate_rdf) {
     out_rdf = std::ofstream(options.rdf_out);
@@ -157,9 +157,14 @@ void Application::prepare_data()
   reader.Get(vZlo, zlo);
   reader.Get(vZhi, zhi);
 
-  box = Box(xlo, xhi, ylo, yhi, zlo, zhi);
+  box              = Box(xlo, xhi, ylo, yhi, zlo, zhi);
 
-  // atoms shape is per-step. We rely on natoms (scalar) and ncolumns=5.
+  // Reject old five-column dumps instead of interpreting type/coordinates as velocities.
+  const auto shape = vAtoms.Shape();
+  if (shape.size() != 2 || shape[0] != N || shape[1] != COLS::NUM_COLS) {
+    throw std::runtime_error("Expected atoms shape [natoms,7] with columns id,x,y,z,vx,vy,vz");
+  }
+  // The atom count and shape may change each step.
   // Select [0..N) x [0..NUM_COLS)
   vAtoms.SetSelection({{0, 0}, {N, COLS::NUM_COLS}});
   atoms.resize(N * COLS::NUM_COLS);
@@ -177,7 +182,7 @@ void Application::modify_data()
   z.reserve(N);
   z.resize(N);
 
-  // columns: [id, type, x, y, z]
+  // columns: [id, x, y, z, vx, vy, vz]
   if (scaled != 0) {
     // cx,cy,cz are fractional (0..1), we need real
     for (size_t i = 0; i < N; ++i) {
@@ -195,7 +200,13 @@ void Application::modify_data()
   }
 
   sr.resize(N);
+  vx.resize(N);
+  vy.resize(N);
+  vz.resize(N);
   for (size_t i = 0; i < N; ++i) {
+    vx[i] = atoms[COLS::NUM_COLS * i + COLS::VX];
+    vy[i] = atoms[COLS::NUM_COLS * i + COLS::VY];
+    vz[i] = atoms[COLS::NUM_COLS * i + COLS::VZ];
     x[i] -= box.cx;
     y[i] -= box.cy;
     z[i] -= box.cz;
@@ -272,8 +283,39 @@ void Application::circumscribed(Sphere& sphere)
   }
 }
 
+void Application::compute_temperature()
+{
+  temperature = std::numeric_limits<double>::quiet_NaN();
+  if (N <= 1) { return; }
+
+  // LAMMPS thermo_temp in 3D, k_B=1, no constraint fixes: 3N-3 DOFs.
+  // Use the original velocities without box scaling or COM subtraction.
+  double squared_speed_sum = 0.0;
+  for (size_t i = 0; i < N; ++i) { squared_speed_sum += vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]; }
+  temperature = mass * squared_speed_sum / (3.0 * static_cast<double>(N - 1));
+}
+
+void Application::compute_center_of_mass_velocity()
+{
+  cvx = cvy = cvz = std::numeric_limits<double>::quiet_NaN();
+  if (N == 0) { return; }
+
+  // Equal ion masses cancel in total momentum / total mass.
+  cvx = cvy = cvz = 0.0;
+  for (size_t i = 0; i < N; ++i) {
+    cvx += vx[i];
+    cvy += vy[i];
+    cvz += vz[i];
+  }
+  cvx /= static_cast<double>(N);
+  cvy /= static_cast<double>(N);
+  cvz /= static_cast<double>(N);
+}
+
 void Application::calculate()
 {
+  compute_temperature();
+  compute_center_of_mass_velocity();
   rmax = 0.5 * box.L_min;
   if (calculate_rdf) { compute_rdf_celllist(); }
 
@@ -287,14 +329,15 @@ void Application::calculate()
     } else {
       circumscribed(sphere);
     }
-    sphere.virial = sphere_virial(sphere.mean_population, sphere.upex, sphere.ubex, static_cast<double>(N) / box.V, gamma);
+    sphere.virial = sphere_virial(sphere.mean_population, sphere.upex, sphere.ubex, static_cast<double>(N) / box.V, temperature);
     normalize_sphere(sphere.mean_population, sphere.upex, sphere.ubex, sphere.uc);
   }
 }
 
 void Application::write()
 {
-  out_meta << timestep << "," << N << "," << box.V << "," << rmax << "," << nbins << "," << 1.0 / gamma << "\n";
+  out_meta << timestep << "," << N << "," << box.V << "," << rmax << "," << nbins << "," << temperature << "," << cvx << "," << cvy << "," << cvz
+           << "\n";
   out_meta.flush();
   for (auto& sphere : spheres) {
     sphere.out_csv << timestep << "," << sphere.radius << "," << sphere.mean_population << "," << sphere.count << "," << sphere.upex << ","

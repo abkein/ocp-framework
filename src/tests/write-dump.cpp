@@ -10,12 +10,23 @@
 #include <string>
 #include <vector>
 
-// Input: scaled, lengths[3], center[3], then frames of N followed by N xyz triples.
+// Input: scaled, lengths[3], center[3], then frames of N followed by N (x,y,z,vx,vy,vz) rows.
 int main(int argc, char** argv)
 {
-  if (argc != 2 && argc != 3) { return 1; }
-  const bool vary_box = argc == 3 && std::string(argv[2]) == "--vary-box";
-  int32_t scaled      = 0;
+  if (argc < 2) { return 1; }
+  bool vary_box  = false;
+  size_t columns = 7;
+  for (int i = 2; i < argc; ++i) {
+    const std::string option(argv[i]);
+    if (option == "--vary-box") {
+      vary_box = true;
+    } else if (option == "--legacy-columns") {
+      columns = 5;
+    } else {
+      return 1;
+    }
+  }
+  int32_t scaled = 0;
   std::array<double, 3> lengths{}, center{};
   std::cin >> scaled;
   for (auto& value : lengths) { std::cin >> value; }
@@ -26,7 +37,7 @@ int main(int argc, char** argv)
   io.SetEngine("BP5");
   io.DefineAttribute<int32_t>("scaled", scaled);
   io.DefineAttribute<int32_t>("triclinic", 0);
-  auto atoms    = io.DefineVariable<double>("atoms", {1, 5}, {0, 0}, {1, 5});
+  auto atoms    = io.DefineVariable<double>("atoms", {1, columns}, {0, 0}, {1, columns});
   auto natoms   = io.DefineVariable<uint64_t>("natoms");
   auto timestep = io.DefineVariable<uint64_t>("ntimestep");
   const std::array<const char*, 6> names{"boxxlo", "boxxhi", "boxylo", "boxyhi", "boxzlo", "boxzhi"};
@@ -39,14 +50,20 @@ int main(int argc, char** argv)
     if (vary_box) {
       for (auto& length : lengths) { std::cin >> length; }
     }
-    std::vector<double> data(n * 5);
+    std::vector<double> data(n * columns);
     for (size_t i = 0; i < n; ++i) {
-      data[5 * i]     = i + 1;
-      data[5 * i + 1] = 1;
+      data[columns * i] = i + 1;
+      if (columns == 5) { data[columns * i + 1] = 1; }
+      const size_t position_offset = columns == 7 ? 1 : 2;
       for (size_t axis = 0; axis < 3; ++axis) {
         double coordinate{};
         if (!(std::cin >> coordinate)) { throw std::runtime_error("Incomplete frame"); }
-        data[5 * i + 2 + axis] = (scaled != 0) ? coordinate / lengths[axis] + 0.5 : coordinate + center[axis];
+        data[columns * i + position_offset + axis] = (scaled != 0) ? coordinate / lengths[axis] + 0.5 : coordinate + center[axis];
+      }
+      for (size_t axis = 0; axis < 3; ++axis) {
+        double velocity{};
+        if (!(std::cin >> velocity)) { throw std::runtime_error("Incomplete velocities"); }
+        if (columns == 7) { data[columns * i + 4 + axis] = velocity; }
       }
     }
     writer.BeginStep();
@@ -56,8 +73,8 @@ int main(int argc, char** argv)
       writer.Put(bounds[2 * axis], center[axis] - lengths[axis] / 2, adios2::Mode::Sync);
       writer.Put(bounds[2 * axis + 1], center[axis] + lengths[axis] / 2, adios2::Mode::Sync);
     }
-    atoms.SetShape({n, 5});
-    atoms.SetSelection({{0, 0}, {n, 5}});
+    atoms.SetShape({n, columns});
+    atoms.SetSelection({{0, 0}, {n, columns}});
     writer.Put(atoms, data.data(), adios2::Mode::Sync);
     writer.EndStep();
     ++step;

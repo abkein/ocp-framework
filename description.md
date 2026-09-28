@@ -1,6 +1,8 @@
 On the input we have an ADIOS2 dump of an MD simulation of one
 component plasma performed by LAMMPS. The dump is written with
-`dump <ID> all atom/adios <PERIOD> dumps/dump.bp`.
+`dump <ID> all custom/adios <PERIOD> dump.bp id x y z vx vy vz`.
+The `atoms` array must have seven columns in the exact order
+`ATOM_ID,X,Y,Z,VX,VY,VZ`; old five-column dumps are rejected.
 Hereafter I use box=cell, referring to the simulation box.
 We have cubic (guaranteed) cell and ion' positions.
 We will designate the cell edge length as $L$ and ion number as $N$.
@@ -95,26 +97,58 @@ the [virial pressure relation](https://docs.lammps.org/stable/compute_pressure.h
 These restricted values need not equal the full periodic Ewald pressure
 reported by LAMMPS.
 
-With `--gamma Gamma`, use a constant reduced temperature $T=1/\Gamma$ for
-every frame. Total pressure and the ion compressibility factor are then
+# Temperature
+
+All ions have the same mass, supplied by `--mass m` (default 1). It must be
+finite and positive, in the same simulation units as the velocities.
+`--gamma` is no longer accepted.
+
+For each frame, compute kinetic temperature from all $N$ original ions,
+without counting periodic images:
 $$
-p_s=n(T+w_s)=\frac{n}{\Gamma}+p_{\mathrm{ex},s},
+E_{\mathrm{kin}}=\frac{m}{2}\sum_{i=1}^{N}(v_{x,i}^2+v_{y,i}^2+v_{z,i}^2),
+\qquad
+T=\frac{2E_{\mathrm{kin}}}{3N-3}.
+$$
+This matches [LAMMPS's default three-dimensional `compute temp`](https://docs.lammps.org/compute_temp.html)
+for the supplied script with no constraint fixes and $k_B=1$. The calculation
+uses velocities as stored, without box scaling or center-of-mass subtraction;
+the script removes initial center-of-mass motion. The degrees of freedom and
+temperature are recalculated from the current atom count every frame.
+
+The center-of-mass velocity components are also calculated from the original
+ions in each frame:
+$$
+(c_{vx},c_{vy},c_{vz})=\frac{1}{N}\sum_{i=1}^{N}(v_{x,i},v_{y,i},v_{z,i}).
+$$
+The common mass cancels in total momentum divided by total mass. These signed
+components are recorded as `cvx,cvy,cvz` in metadata, in simulation velocity
+units. For one ion they equal that ion's velocity. They are diagnostics and
+are not subtracted from velocities when calculating temperature.
+
+The same current-frame temperature is used for every sphere:
+$$
+p_s=n(T+w_s)=nT+p_{\mathrm{ex},s},
 \qquad
 Z_{\mathrm{ion},s}=\frac{p_s V_s}{N_s T}
-=\frac{p_s V}{NT}=1+\Gamma w_s.
+=\frac{p_s V}{NT}=1+\frac{w_s}{T}.
 $$
 Here $N_s$ is the same mean population used for energies and virials, not the
-instantaneous selected count. This estimates the kinetic contribution from
-the supplied constant temperature; it does not measure temperature fluctuations
-from the trajectory.
+instantaneous selected count. Temperature is a whole-cell quantity, not a
+separate estimate from the ions selected in each sphere.
+
+For $N\le1$, the temperature convention is undefined: `T`, `p`, and `Z`
+are reported as `nan`. For $N>1$ with zero velocities, `T=0`, pressure equals
+`pex`, and `Z` is `nan` because its denominator is zero. Energies, virial,
+and excess pressure are still calculated in both cases.
 
 # Running and output
 
 For example, calculate four numeric radii plus the exact circumsphere, with
-ADIOS2 defaults and $\Gamma=10$:
+ADIOS2 defaults and ion mass 1:
 
 ```sh
-ocp-framework dumps/dump.bp 0.5 1 c 2 2.9 --config "" --gamma 10
+ocp-framework dump.bp 0.5 1 c 2 2.9 --config "" --mass 1
 ```
 
 The flags `-i` and `-c` are replaced by the positional radius list. An RDF-only
@@ -147,18 +181,16 @@ for every frame. Currently `r = rfrac * metadata.rmax`; `rmax` remains in
 metadata independently. The mapping is written once, including for an empty
 trajectory. An RDF-only run produces an empty JSON array.
 
-Each step also writes `timestep,N,V,rmax,nbins,T` to `metadata.csv`; use
+Each step also writes `timestep,N,V,rmax,nbins,T,cvx,cvy,cvz` to `metadata.csv`; use
 `--meta-out path.csv` to change this filename. The files can be joined by
 timestep. Neither metadata nor sphere files include `dr` or `Gamma`: `dr` is
 the constant CLI bin width, and $\Gamma=1/T$. The metadata always reports
 `rmax = 0.5 * min(Lx,Ly,Lz)`; `nbins` is zero when RDF calculation is disabled.
 
-The optional `--gamma Gamma` argument must be finite and positive, with a
-representable finite positive reciprocal. The inferred temperature `T` is
-written to the metadata file; `p,Z` in each sphere file contain total pressure
-and compressibility factor. Without `--gamma`, these values contain `nan`.
-Virial and excess pressure are independent of `--gamma`. Zero virial gives
-$p_s=nT$ and $Z_{\mathrm{ion},s}=1$.
+The measured temperature `T` is written to the metadata file. Each sphere
+file reports total pressure and compressibility as `p,Z`, using that frame's
+`T`. Virial and excess pressure are independent of the velocities and mass.
+For positive temperature, zero virial gives $p_s=nT$ and $Z_{\mathrm{ion},s}=1$.
 
 `--rdf dr` produces per-ion pair counts in radial bins of width `dr`, using
 minimum-image distances. Distances at or above `rmax` are excluded, including
@@ -168,5 +200,6 @@ normalized by density and shell volume to produce $g(r)$.
 
 In each step, `prepare_data()` reads the frame and completes the pending reads.
 `run()` then calls `reader.EndStep()` immediately, followed by `modify_data()`
-to convert coordinates and calculate squared distances from the box center,
+to convert coordinates, extract velocities, and calculate squared distances
+from the box center,
 then `calculate()` and `write()`.
