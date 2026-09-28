@@ -148,7 +148,7 @@ For example, calculate four numeric radii plus the exact circumsphere, with
 ADIOS2 defaults and ion mass 1:
 
 ```sh
-ocp-framework dump.bp 0.5 1 c 2 2.9 --config "" --mass 1
+mpiexec -n 4 ocp-framework dump.bp 0.5 1 c 2 2.9 --config "" --mass 1
 ```
 
 The flags `-i` and `-c` are replaced by the positional radius list. An RDF-only
@@ -198,8 +198,54 @@ from a partially filled final bin. The range is fixed at half the shortest box
 edge; there are no `--rmax` or `--rmax-frac` options. These counts are not
 normalized by density and shell volume to produce $g(r)$.
 
-In each step, `prepare_data()` reads the frame and completes the pending reads.
-`run()` then calls `reader.EndStep()` immediately, followed by `modify_data()`
-to convert coordinates, extract velocities, and calculate squared distances
-from the box center,
-then `calculate()` and `write()`.
+# MPI execution and I/O
+
+The executable requires MPI and an MPI-enabled ADIOS2 build. It can also be
+launched directly for a one-rank run. All ranks must see the same input file
+and shared output paths; use a completed BP5 dump rather than a live stream.
+
+With $P$ ranks, batch $b$ assigns file step $bP+k$ to rank $k$. Each rank reads
+one complete frame and calculates all requested spheres sequentially. Sphere
+count does not have to match or divide rank count. In the final partial batch,
+ranks without a frame skip reading and computation but join the output
+collectives with empty rows. The batch waits for its slowest frame; this
+balances sphere costs when frames have similar populations, but it is not a
+dynamic scheduler for trajectories whose frame costs vary greatly.
+
+Every rank has an independent ADIOS2 reader on `MPI_COMM_SELF`, opened in
+`ReadRandomAccess` mode. `prepare_data(step)` selects exactly that step on
+all variables and obtains its own atom-array shape. After `PerformGets()`,
+`modify_data()` and `calculate()` process the frame. There are no
+`BeginStep()`/`EndStep()` calls in this mode. Random-access reading loads the
+file's step metadata, while each rank holds only one frame's atom data and
+one sphere's image list at a time. See the
+[ADIOS2 file-reading documentation](https://adios2.readthedocs.io/en/latest/components/components.html).
+
+CSV output uses collective
+[`MPI_File_write_at_all`](https://docs.open-mpi.org/en/main/man-openmpi/man3/MPI_File_write_at_all.3.html).
+For each file and batch, ranks format complete rows locally. `MPI_Exscan`
+computes each rank's byte offset, and `MPI_Allreduce` determines the total
+batch length. These disjoint offsets prevent interleaved rows without shared
+append pointers, file locks, or gathering the CSV data on rank zero. Headers
+are written once; existing output files are truncated at the start of a run.
+The same method handles variable-length RDF rows. Consumers should join
+results by `timestep`; no timestep sorting is required. `spheres.json` is
+written only by rank zero.
+
+A rank-local read or output error aborts the MPI job, so peers do not hang in
+later collectives. Partially written outputs should be discarded after a
+failed run. CSV rows are limited to the MPI `int` count limit (roughly 2 GiB
+per row), while file offsets use `MPI_Offset`.
+
+Build and test with:
+
+```sh
+cmake -S src -B build -DBUILD_TESTING=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+The tests compare one-rank results with 2, 3, and 4 ranks, including changing
+atom counts and box sizes, partial batches, idle ranks, output truncation,
+and errors affecting a single rank. The Nix package includes MPI and enables
+these tests through the MPI check hook.

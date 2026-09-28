@@ -118,7 +118,7 @@ def check_sphere(row, points, lengths, step, rfrac, temperature):
 def run_case(root, frames, lengths=(4, 4, 4), center=(0, 0, 0), scaled=False,
              flags=("--rdf", "0.5"), dr=0.5, mass=None, metadata_out=None,
              radii=("0.5", "1", "c", "2", "2.9"), obs_out="observables.csv",
-             spheres_out="spheres.json", frame_lengths=None, velocities=None):
+             spheres_out="spheres.json", frame_lengths=None, velocities=None, launcher=()):
     dump = root / "dump.bp"
     header = [int(scaled), *lengths, *center]
     lines = [" ".join(map(str, header))]
@@ -139,8 +139,8 @@ def run_case(root, frames, lengths=(4, 4, 4), center=(0, 0, 0), scaled=False,
     (root / obs_out).parent.mkdir(parents=True, exist_ok=True)
     (root / spheres_out).parent.mkdir(parents=True, exist_ok=True)
     # Place radii after other options to exercise interspersed option parsing.
-    subprocess.run([program, str(dump), "--config", "", *flags, *mass_args, *radii,
-                    *metadata_args, "--obs-out", obs_out, "--spheres-out", spheres_out], cwd=root, check=True)
+    subprocess.run([*launcher, program, str(dump), "--config", "", *flags, *mass_args, *radii,
+                    *metadata_args, "--obs-out", obs_out, "--spheres-out", spheres_out], cwd=root, check=True, timeout=90)
     manifest_path = root / spheres_out
     manifest = json.loads(manifest_path.read_text())
     if len(manifest) != len(radii):
@@ -162,7 +162,7 @@ def run_case(root, frames, lengths=(4, 4, 4), center=(0, 0, 0), scaled=False,
             reader = csv.DictReader(stream)
             if reader.fieldnames != "timestep,r,Ns,Nrs,upex,ubex,uc,virial,pex,p,Z".split(","):
                 raise AssertionError(f"Unexpected sphere columns: {reader.fieldnames}")
-            rows = list(reader)
+            rows = sorted(reader, key=lambda row: int(row["timestep"]))
         if len(rows) != len(frames):
             raise AssertionError("Unexpected sphere frame count")
         sphere_rows.append(rows)
@@ -172,7 +172,7 @@ def run_case(root, frames, lengths=(4, 4, 4), center=(0, 0, 0), scaled=False,
         reader = csv.DictReader(stream)
         if reader.fieldnames != ["timestep", "N", "V", "rmax", "nbins", "T", "cvx", "cvy", "cvz"]:
             raise AssertionError(f"Unexpected metadata columns: {reader.fieldnames}")
-        metadata_rows = list(reader)
+        metadata_rows = sorted(reader, key=lambda row: int(row["timestep"]))
     if len(metadata_rows) != len(frames):
         raise AssertionError("Unexpected metadata frame count")
     if metadata_out is not None and (root / "metadata.csv").exists():
@@ -180,7 +180,7 @@ def run_case(root, frames, lengths=(4, 4, 4), center=(0, 0, 0), scaled=False,
     rdf = None
     if "--rdf" in flags:
         with (root / "rdf.csv").open() as stream:
-            rdf = list(csv.reader(stream))
+            rdf = sorted(csv.reader(stream), key=lambda row: int(row[0]))
         if len(rdf) != len(frames):
             raise AssertionError("Unexpected RDF frame count")
     for step, frame in enumerate(frames):
@@ -196,80 +196,88 @@ def run_case(root, frames, lengths=(4, 4, 4), center=(0, 0, 0), scaled=False,
         for rfrac, rows in zip(radii, sphere_rows):
             check_sphere(rows[step], frame, current_lengths, step, rfrac, temperature)
 
+    return {"metadata": metadata_rows, "spheres": sphere_rows, "rdf": rdf}
 
-program, writer = map(lambda s: str(Path(s).resolve()), sys.argv[1:])
-rng = random.Random(17)
-frames = [
-    [(0, 0, 0)],  # For rfrac=2, the six images at radius L are excluded.
-    [(1, 0, 0), (0, 0, 0)],  # rfrac=0.5 excludes the ion exactly at radius 1.
-    [(-0.5, 0, 0), (0.5, 0, 0), (1.9, 1.9, 1.9), (-1.9, -1.9, -1.9)],
-    [(1.9, 1.9, 1.9)],  # Empty inscribed sphere, but nonzero mean population.
-    [(-2, -2, -2)],  # All eight corner images must be excluded for c.
-    [(-1.9, -1.9, 0)],  # Edge images; pairs of images of the same ion.
-    [(-2, 0, 0), (0, 0, 0)],  # Inscribed boundary and RDF's excluded upper edge.
-    [(-0.75, -0.75, -0.75), (0.75, 0.75, 0.75)],  # Entirely beyond RDF cutoff.
-    [(rng.uniform(-1.9, 1.9), rng.uniform(-1.9, 1.9), rng.uniform(-1.9, 1.9)) for _ in range(9)],
-]
-cases = [
-    {},
-    {"mass": 5, "metadata_out": "frames.csv", "obs_out": 'outputs/sphere "quoted"\\name.csv',
-     "spheres_out": "indices/spheres.json"},
-    {"mass": 0.25, "scaled": True, "center": (3, -2, 7)},
-    {"scaled": True, "center": (3, -2, 7)},
-    {"center": (3, -2, 7)},
-    {"flags": (), "radii": ("c",), "mass": 15},
-    {"flags": (), "radii": ("1",), "mass": 2},
-    {"flags": ("--rdf", "0.6"), "dr": 0.6, "radii": ()},
-    {"flags": ("--rdf", "0.5"), "mass": 4},
-    {"flags": ("--rdf", "3"), "dr": 3, "radii": (str(math.nextafter(3.0, 0.0)), "1", "2.9", "0.5", "c")},
-]
-with tempfile.TemporaryDirectory(prefix="ocp-regression-") as directory:
-    for index, case in enumerate(cases):
-        root = Path(directory) / str(index)
+
+def main():
+    global program, writer
+    program, writer = map(lambda s: str(Path(s).resolve()), sys.argv[1:])
+    rng = random.Random(17)
+    frames = [
+        [(0, 0, 0)],  # For rfrac=2, the six images at radius L are excluded.
+        [(1, 0, 0), (0, 0, 0)],  # rfrac=0.5 excludes the ion exactly at radius 1.
+        [(-0.5, 0, 0), (0.5, 0, 0), (1.9, 1.9, 1.9), (-1.9, -1.9, -1.9)],
+        [(1.9, 1.9, 1.9)],  # Empty inscribed sphere, but nonzero mean population.
+        [(-2, -2, -2)],  # All eight corner images must be excluded for c.
+        [(-1.9, -1.9, 0)],  # Edge images; pairs of images of the same ion.
+        [(-2, 0, 0), (0, 0, 0)],  # Inscribed boundary and RDF's excluded upper edge.
+        [(-0.75, -0.75, -0.75), (0.75, 0.75, 0.75)],  # Entirely beyond RDF cutoff.
+        [(rng.uniform(-1.9, 1.9), rng.uniform(-1.9, 1.9), rng.uniform(-1.9, 1.9)) for _ in range(9)],
+    ]
+    cases = [
+        {},
+        {"mass": 5, "metadata_out": "frames.csv", "obs_out": 'outputs/sphere "quoted"\\name.csv',
+         "spheres_out": "indices/spheres.json"},
+        {"mass": 0.25, "scaled": True, "center": (3, -2, 7)},
+        {"scaled": True, "center": (3, -2, 7)},
+        {"center": (3, -2, 7)},
+        {"flags": (), "radii": ("c",), "mass": 15},
+        {"flags": (), "radii": ("1",), "mass": 2},
+        {"flags": ("--rdf", "0.6"), "dr": 0.6, "radii": ()},
+        {"flags": ("--rdf", "0.5"), "mass": 4},
+        {"flags": ("--rdf", "3"), "dr": 3, "radii": (str(math.nextafter(3.0, 0.0)), "1", "2.9", "0.5", "c")},
+    ]
+    with tempfile.TemporaryDirectory(prefix="ocp-regression-") as directory:
+        for index, case in enumerate(cases):
+            root = Path(directory) / str(index)
+            root.mkdir()
+            run_case(root, frames, **case)
+        root = Path(directory) / "rectangular"
         root.mkdir()
-        run_case(root, frames, **case)
-    root = Path(directory) / "rectangular"
-    root.mkdir()
-    run_case(root, [[(0, 0, 0), (0.4, 1.8, 2.9)]], lengths=(1, 4, 6), mass=3)
-    for value in ("0", "-1", "nan", "inf", "-inf", "1oops", "abc", "1e999", "1e-999"):
-        result = subprocess.run([program, "unused.bp", "1", "--mass", value],
-                                capture_output=True, text=True)
-        if result.returncode == 0 or "--mass must be finite and > 0" not in result.stderr:
-            raise AssertionError(f"Invalid mass accepted or misdiagnosed: {value}")
-    result = subprocess.run([program, "unused.bp", "1", "--mass"], capture_output=True, text=True)
-    if result.returncode == 0 or "Missing value after --mass" not in result.stderr:
-        raise AssertionError("Missing mass value accepted or misdiagnosed")
-    for flag in ("--rmax", "--rmax-frac", "-i", "-c", "--gamma"):
-        result = subprocess.run([program, "unused.bp", "--rdf", "0.5", flag, "1"],
-                                capture_output=True, text=True)
-        if result.returncode == 0 or f"Unknown argument: {flag}" not in result.stderr:
-            raise AssertionError(f"Removed option still accepted or misdiagnosed: {flag}")
-    for value in ("0", "3", "3.0001", "nan", "inf", "abc", "1oops", "1e999", "1e-999"):
-        result = subprocess.run([program, "unused.bp", value], capture_output=True, text=True)
-        if result.returncode == 0 or "Sphere multiplier must be" not in result.stderr:
-            raise AssertionError(f"Invalid multiplier accepted or misdiagnosed: {value}")
-    for args in ([], ["-0.5"]):
-        result = subprocess.run([program, "unused.bp", *args], capture_output=True, text=True)
-        expected = "Need at least one sphere" if not args else "Unknown argument: -0.5"
-        if result.returncode == 0 or expected not in result.stderr:
-            raise AssertionError(f"Invalid sphere arguments accepted or misdiagnosed: {args}")
-    root = Path(directory) / "varying-box"
-    root.mkdir()
-    run_case(root, [[(0, 0, 0), (0.5, 0, 0)]] * 3, scaled=True, mass=2,
-             frame_lengths=[(4, 4, 4), (6, 6, 6), (3, 3, 3)])
-    root = Path(directory) / "fractional-box"
-    root.mkdir()
-    run_case(root, [[(-1.3, -1.3, -1.3)], [(-1.3, 0, 0)]], lengths=(2.6, 2.6, 2.6), mass=1)
-    root = Path(directory) / "changing-temperature"
-    root.mkdir()
-    run_case(root, [[(-0.5, 0, 0), (0.5, 0, 0)]] * 3, mass=2,
-             velocities=[[(1, 2, 3), (-1, -2, -3)], [(0, 0, 0), (0, 0, 0)], [(3, 2, 9), (-1, -6, -3)]])
-    root = Path(directory) / "legacy-columns"
-    root.mkdir()
-    dump = root / "dump.bp"
-    subprocess.run([writer, str(dump), "--legacy-columns"],
-                   input="0 4 4 4 0 0 0\n2\n-0.5 0 0 1 2 3\n0.5 0 0 -1 -2 -3\n", text=True, check=True)
-    result = subprocess.run([program, str(dump), "1", "--config", ""], cwd=root, capture_output=True, text=True)
-    if result.returncode == 0 or "Expected atoms shape [natoms,7]" not in result.stderr:
-        raise AssertionError("Legacy five-column dump accepted or misdiagnosed")
-print(f"Passed {len(cases) * len(frames) + 9} frame checks, 26 invalid-argument checks, and legacy-layout rejection.")
+        run_case(root, [[(0, 0, 0), (0.4, 1.8, 2.9)]], lengths=(1, 4, 6), mass=3)
+        for value in ("0", "-1", "nan", "inf", "-inf", "1oops", "abc", "1e999", "1e-999"):
+            result = subprocess.run([program, "unused.bp", "1", "--mass", value],
+                                    capture_output=True, text=True)
+            if result.returncode == 0 or "--mass must be finite and > 0" not in result.stderr:
+                raise AssertionError(f"Invalid mass accepted or misdiagnosed: {value}")
+        result = subprocess.run([program, "unused.bp", "1", "--mass"], capture_output=True, text=True)
+        if result.returncode == 0 or "Missing value after --mass" not in result.stderr:
+            raise AssertionError("Missing mass value accepted or misdiagnosed")
+        for flag in ("--rmax", "--rmax-frac", "-i", "-c", "--gamma"):
+            result = subprocess.run([program, "unused.bp", "--rdf", "0.5", flag, "1"],
+                                    capture_output=True, text=True)
+            if result.returncode == 0 or f"Unknown argument: {flag}" not in result.stderr:
+                raise AssertionError(f"Removed option still accepted or misdiagnosed: {flag}")
+        for value in ("0", "3", "3.0001", "nan", "inf", "abc", "1oops", "1e999", "1e-999"):
+            result = subprocess.run([program, "unused.bp", value], capture_output=True, text=True)
+            if result.returncode == 0 or "Sphere multiplier must be" not in result.stderr:
+                raise AssertionError(f"Invalid multiplier accepted or misdiagnosed: {value}")
+        for args in ([], ["-0.5"]):
+            result = subprocess.run([program, "unused.bp", *args], capture_output=True, text=True)
+            expected = "Need at least one sphere" if not args else "Unknown argument: -0.5"
+            if result.returncode == 0 or expected not in result.stderr:
+                raise AssertionError(f"Invalid sphere arguments accepted or misdiagnosed: {args}")
+        root = Path(directory) / "varying-box"
+        root.mkdir()
+        run_case(root, [[(0, 0, 0), (0.5, 0, 0)]] * 3, scaled=True, mass=2,
+                 frame_lengths=[(4, 4, 4), (6, 6, 6), (3, 3, 3)])
+        root = Path(directory) / "fractional-box"
+        root.mkdir()
+        run_case(root, [[(-1.3, -1.3, -1.3)], [(-1.3, 0, 0)]], lengths=(2.6, 2.6, 2.6), mass=1)
+        root = Path(directory) / "changing-temperature"
+        root.mkdir()
+        run_case(root, [[(-0.5, 0, 0), (0.5, 0, 0)]] * 3, mass=2,
+                 velocities=[[(1, 2, 3), (-1, -2, -3)], [(0, 0, 0), (0, 0, 0)], [(3, 2, 9), (-1, -6, -3)]])
+        root = Path(directory) / "legacy-columns"
+        root.mkdir()
+        dump = root / "dump.bp"
+        subprocess.run([writer, str(dump), "--legacy-columns"],
+                       input="0 4 4 4 0 0 0\n2\n-0.5 0 0 1 2 3\n0.5 0 0 -1 -2 -3\n", text=True, check=True)
+        result = subprocess.run([program, str(dump), "1", "--config", ""], cwd=root, capture_output=True, text=True)
+        if result.returncode == 0 or "Expected atoms shape [natoms,7]" not in result.stderr:
+            raise AssertionError("Legacy five-column dump accepted or misdiagnosed")
+    print(f"Passed {len(cases) * len(frames) + 9} frame checks, 26 invalid-argument checks, and legacy-layout rejection.")
+
+
+if __name__ == "__main__":
+    main()

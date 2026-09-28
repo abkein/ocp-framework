@@ -1,4 +1,5 @@
 #include "ocp-framework.hpp"
+#include "mpi-csv.hpp"
 
 #include <adios2/common/ADIOSTypes.h>
 #include <adios2/cxx/ADIOS.h>
@@ -16,7 +17,9 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <mpi.h>
 #include <numbers>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -86,41 +89,32 @@ namespace {
 }    // namespace
 
 Application::Application(const Options& options) :
-    adios(adios2::ADIOS(options.adiosConfig)), calculate_rdf(options.calculate_rdf), dr(options.dr), spheres_out(options.spheres_out),
+    adios(adios2::ADIOS(options.adiosConfig, MPI_COMM_SELF)), calculate_rdf(options.calculate_rdf), dr(options.dr), spheres_out(options.spheres_out),
     mass(options.mass)
 {
+  mpi_check(MPI_Comm_rank(MPI_COMM_WORLD, &rank), "MPI_Comm_rank");
+  mpi_check(MPI_Comm_size(MPI_COMM_WORLD, &world_size), "MPI_Comm_size");
   io     = adios.DeclareIO(options.ioName);
-  reader = io.Open(options.bpFile, adios2::Mode::Read);
+  reader = io.Open(options.bpFile, adios2::Mode::ReadRandomAccess);
 
   // Numbered filenames preserve request order, including repeated multipliers.
   const std::filesystem::path base(options.csv_out);
   const std::string extension = base.has_extension() ? base.extension().string() : ".csv";
   for (const auto& spec : options.spheres) {
-    Sphere sphere{.spec = spec};
-    sphere.filename = (base.parent_path() / (base.stem().string() + "-" + std::to_string(spheres.size() + 1) + extension)).string();
-    sphere.out_csv.open(sphere.filename);
-    if (!sphere.out_csv) { throw std::runtime_error("Cannot open " + sphere.filename); }
-    sphere.out_csv << std::setprecision(std::numeric_limits<double>::max_digits10);
-    sphere.out_csv << "timestep,r,Ns,Nrs,upex,ubex,uc,virial,pex,p,Z\n";
+    Sphere sphere{.spec     = spec,
+                  .filename = (base.parent_path() / (base.stem().string() + "-" + std::to_string(spheres.size() + 1) + extension)).string()};
+    sphere.out_csv.open(sphere.filename, "timestep,r,Ns,Nrs,upex,ubex,uc,virial,pex,p,Z\n");
     spheres.push_back(std::move(sphere));
   }
-  write_sphere_index();
+  if (rank == 0) { write_sphere_index(); }
 
-  out_meta = std::ofstream(options.metadata_out);
-  if (!out_meta) { throw std::runtime_error("Cannot open " + options.metadata_out); }
-  out_meta << std::setprecision(std::numeric_limits<double>::max_digits10);
-  out_meta << "timestep,N,V,rmax,nbins,T,cvx,cvy,cvz\n";
-
-  if (calculate_rdf) {
-    out_rdf = std::ofstream(options.rdf_out);
-    if (!out_rdf) { throw std::runtime_error("Cannot open " + options.rdf_out); }
-    out_rdf << std::setprecision(std::numeric_limits<double>::max_digits10);
-  }
+  out_meta.open(options.metadata_out, "timestep,N,V,rmax,nbins,T,cvx,cvy,cvz\n");
+  if (calculate_rdf) { out_rdf.open(options.rdf_out, ""); }
 }
 
-void Application::prepare_data()
+void Application::prepare_data(const size_t step)
 {
-  // BP5 exposes metadata only after BeginStep(). Refresh handles per step.
+  // Random-access mode exposes metadata for all steps after Open().
   // Attributes (constant across steps)
   if (auto const a = io.InquireAttribute<int32_t>("scaled"); a) { scaled = a.Data()[0]; }
 
@@ -145,6 +139,11 @@ void Application::prepare_data()
   vZhi = io.InquireVariable<double>("boxzhi");
   if (!vXlo || !vXhi || !vYlo || !vYhi || !vZlo || !vZhi) { throw std::runtime_error("Box bound variables not found (box{x,y,z}{lo,hi})."); }
 
+  vNt.SetStepSelection({step, 1});
+  vNatoms.SetStepSelection({step, 1});
+  vAtoms.SetStepSelection({step, 1});
+  for (auto* variable : {&vXlo, &vXhi, &vYlo, &vYhi, &vZlo, &vZhi}) { variable->SetStepSelection({step, 1}); }
+
   reader.Get(vNt, timestep);
   uint64_t natoms{};
   reader.Get(vNatoms, natoms);
@@ -160,7 +159,7 @@ void Application::prepare_data()
   box              = Box(xlo, xhi, ylo, yhi, zlo, zhi);
 
   // Reject old five-column dumps instead of interpreting type/coordinates as velocities.
-  const auto shape = vAtoms.Shape();
+  const auto shape = vAtoms.Shape(step);
   if (shape.size() != 2 || shape[0] != N || shape[1] != COLS::NUM_COLS) {
     throw std::runtime_error("Expected atoms shape [natoms,7] with columns id,x,y,z,vx,vy,vz");
   }
@@ -334,22 +333,32 @@ void Application::calculate()
   }
 }
 
-void Application::write()
+void Application::write(const bool active)
 {
-  out_meta << timestep << "," << N << "," << box.V << "," << rmax << "," << nbins << "," << temperature << "," << cvx << "," << cvy << "," << cvz
-           << "\n";
-  out_meta.flush();
+  std::ostringstream row;
+  row << std::setprecision(std::numeric_limits<double>::max_digits10);
+  if (active) {
+    row << timestep << "," << N << "," << box.V << "," << rmax << "," << nbins << "," << temperature << "," << cvx << "," << cvy << "," << cvz
+        << "\n";
+  }
+  out_meta.append(row.str());
   for (auto& sphere : spheres) {
-    sphere.out_csv << timestep << "," << sphere.radius << "," << sphere.mean_population << "," << sphere.count << "," << sphere.upex << ","
-                   << sphere.ubex << "," << sphere.uc << "," << sphere.virial.virial << "," << sphere.virial.excess_pressure << ","
-                   << sphere.virial.pressure << "," << sphere.virial.compressibility << "\n";
-    sphere.out_csv.flush();
+    row.str("");
+    if (active) {
+      row << timestep << "," << sphere.radius << "," << sphere.mean_population << "," << sphere.count << "," << sphere.upex << "," << sphere.ubex
+          << "," << sphere.uc << "," << sphere.virial.virial << "," << sphere.virial.excess_pressure << "," << sphere.virial.pressure << ","
+          << sphere.virial.compressibility << "\n";
+    }
+    sphere.out_csv.append(row.str());
   }
   if (calculate_rdf) {
-    out_rdf << timestep;
-    for (size_t i = 0; i < nbins; ++i) { out_rdf << "," << counts[i]; }
-    out_rdf << "\n";
-    out_rdf.flush();
+    row.str("");
+    if (active) {
+      row << timestep;
+      for (size_t i = 0; i < nbins; ++i) { row << "," << counts[i]; }
+      row << "\n";
+    }
+    out_rdf.append(row.str());
   }
 }
 
@@ -370,17 +379,23 @@ void Application::write_sphere_index()
 
 void Application::run()
 {
-  while (true) {
-    const auto status = reader.BeginStep();
-    if (status != adios2::StepStatus::OK) { break; }
-
-    prepare_data();
-    reader.EndStep();
-
-    modify_data();
-    calculate();
-    write();
+  const size_t steps  = reader.Steps();
+  const size_t stride = static_cast<size_t>(world_size);
+  for (size_t batch = 0; batch < steps; batch += stride) {
+    const size_t step = batch + static_cast<size_t>(rank);
+    const bool active = step < steps;
+    if (active) {
+      prepare_data(step);
+      modify_data();
+      calculate();
+    }
+    // All ranks participate, including those without a frame in the last batch.
+    write(active);
   }
+  reader.Close();
+  for (auto& sphere : spheres) { sphere.out_csv.close(); }
+  out_meta.close();
+  if (calculate_rdf) { out_rdf.close(); }
 }
 
 void Application::compute_rdf_celllist()
@@ -404,22 +419,19 @@ void Application::compute_rdf_celllist()
   for (size_t i = 0; i < nbins; ++i) { counts[i] /= static_cast<double>(N); }
 }
 
-Application::~Application()
-{
-  for (auto& sphere : spheres) { sphere.out_csv.close(); }
-  out_meta.close();
-  if (calculate_rdf) { out_rdf.close(); }
-  reader.Close();
-}
-
 int main(int argc, char** argv)
 {
+  if (MPI_Init(&argc, &argv) != MPI_SUCCESS) { return 1; }
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   try {
+    mpi_check(MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN), "MPI_Comm_set_errhandler");
     Application app(Options(argc, argv));
     app.run();
-
   } catch (const std::exception& e) {
-    std::cerr << "Error: " << e.what() << "\n";
+    std::cerr << "Rank " << rank << " error: " << e.what() << "\n";
+    MPI_Abort(MPI_COMM_WORLD, 1);
     return 1;
   }
+  return MPI_Finalize() == MPI_SUCCESS ? 0 : 1;
 }

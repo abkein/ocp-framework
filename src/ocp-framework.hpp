@@ -1,6 +1,8 @@
 #ifndef OCP_FRAMEWORK_HPP
 #define OCP_FRAMEWORK_HPP
 
+#include "mpi-csv.hpp"
+
 #include <adios2/cxx/ADIOS.h>
 #include <adios2/cxx/Engine.h>
 #include <adios2/cxx/IO.h>
@@ -10,7 +12,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
@@ -134,7 +135,7 @@ struct SphereVirial {
 struct Sphere {
   SphereSpec spec;
   std::string filename;
-  std::ofstream out_csv;
+  MpiCsv out_csv;
   double radius{}, radius_squared{}, mean_population{};
   size_t count{};
   double upex{}, ubex{}, uc{};
@@ -143,20 +144,20 @@ struct Sphere {
 
 struct Application {
   explicit Application(const Options& opt);
-  Application(const Application&) = delete;
-  Application(Application&&)      = delete;
-  ~Application();
+  Application(const Application&)    = delete;
+  Application(Application&&)         = delete;
+  ~Application()                     = default;
 
   void operator=(const Application&) = delete;
   void operator=(Application&&)      = delete;
 
   void run();
-  void prepare_data();
+  void prepare_data(size_t step);
   void modify_data();
   void calculate();
   void compute_temperature();
   void compute_center_of_mass_velocity();
-  void write();
+  void write(bool active);
   void compute_rdf_celllist();
   void inscribed(Sphere& sphere);
   void circumscribed(Sphere& sphere);
@@ -167,8 +168,10 @@ struct Application {
   adios2::Engine reader;
   int32_t scaled    = 0;    // 0 if coordinates are dimensional (real); 1 if dimensionless — x->x/Lx, y->y/Ly, z->z/Lz
   int32_t triclinic = 0;
-  std::ofstream out_rdf;
-  std::ofstream out_meta;
+  MpiCsv out_rdf;
+  MpiCsv out_meta;
+  int rank           = 0;
+  int world_size     = 1;
 
   bool calculate_rdf = false;
 

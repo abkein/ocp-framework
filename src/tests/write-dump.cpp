@@ -14,12 +14,15 @@
 int main(int argc, char** argv)
 {
   if (argc < 2) { return 1; }
-  bool vary_box  = false;
-  size_t columns = 7;
+  bool vary_box        = false;
+  bool bad_second_step = false;
+  size_t columns       = 7;
   for (int i = 2; i < argc; ++i) {
     const std::string option(argv[i]);
     if (option == "--vary-box") {
       vary_box = true;
+    } else if (option == "--bad-second-step") {
+      bad_second_step = true;
     } else if (option == "--legacy-columns") {
       columns = 5;
     } else {
@@ -47,6 +50,7 @@ int main(int argc, char** argv)
   auto writer = io.Open(argv[1], adios2::Mode::Write);
   uint64_t n{}, step = 0;
   while (std::cin >> n) {
+    if (bad_second_step && step == 1) { columns = 5; }
     if (vary_box) {
       for (auto& length : lengths) { std::cin >> length; }
     }

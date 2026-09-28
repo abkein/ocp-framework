@@ -4,6 +4,8 @@
   cmake,
   adios2,
   python3,
+  mpi,
+  mpiCheckPhaseHook,
 }:
 
 stdenv.mkDerivation {
@@ -16,7 +18,11 @@ stdenv.mkDerivation {
     cmake
     python3
   ];
-  buildInputs = [ adios2 ];
+  buildInputs = [
+    adios2
+    mpi
+  ];
+  nativeCheckInputs = [ mpiCheckPhaseHook ];
   doCheck = true;
   checkPhase = ''
     runHook preCheck
