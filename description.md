@@ -10,63 +10,52 @@ Coordinate origin is exactly in the cell's center.
 
 A sample LAMMPS input file can be found in [in.lammps](./in.lammps).
 
-# Function `inscribed`:
+# Sphere selection and energies
 
-We imagine a sphere, inscribed into the cube (cubic cell).
-The sphere' radius is then $R_{\mathrm{insc}}=L/2$.
-The number of ions in the sphere (average) $N_{\mathrm{insc}}=N \pi/6$.
-What function should do is for ions inside the inscribed sphere calculate:
+Supply a positional list of multipliers after the input file, optionally
+interspersed with CLI options. Each multiplier $f$ must be finite and in
+$(0,3)$ and defines
 $$
-u^{(\mathrm{insc})}_{c} = \frac{3}{5}N_{\mathrm{insc}}^{2/3},
+R_s=f\frac{L_{\min}}{2},\qquad
+V_s=\frac{4\pi R_s^3}{3},\qquad
+N_s=N\frac{V_s}{L_xL_yL_z}.
 $$
-$$
-u^{(\mathrm{insc})}_{p\mathrm{ex}} = \frac{1}{N_{\mathrm{insc}}}\sum_{i<j}\frac{1}{r_{ij}} - u^{(\mathrm{insc})}_{c},
-$$
-$$
-u^{(\mathrm{insc})}_{b\mathrm{ex}} = \frac{1}{2}\left(\frac{1}{N_{\mathrm{insc}}}\sum_{i}r_i^2 - u^{(\mathrm{insc})}_{c}\right)
-$$
-Inspect all $N$ ions and select those with $r_i^2 \le R_{\mathrm{insc}}^2$.
-Sum over each unordered pair of selected ions exactly once, using direct distances
-without a minimum-image reduction. The geometric mean population
-$N_{\mathrm{insc}}$ is not rounded; the actual selected count is reported separately.
+The special token `c` means $f=\sqrt{3}$ and
+$R_s=L_{\min}\sqrt{3}/2$, the circumsphere radius for a cube. The token is
+converted to its numeric multiplier in the JSON output. For a noncubic box
+it still uses $L_{\min}$, not the box diagonal.
 
-# Function `circumscribed`:
+- Multipliers $(0,1]$ use `inscribed()`: inspect all original ions and select
+  those with $r_i^2<R_s^2$. Multiplier 1 gives the original inscribed sphere.
+- Multipliers $(1,3)$ use `circumscribed()`: construct periodic images and
+  select all points with $r_i^2<R_s^2$. Every selected image is a distinct
+  point, including images of the same original ion. The necessary integer
+  translations are restricted to $k_x,k_y,k_z\in\{-1,0,1\}$, so at most
+  $3\times3\times3$ cells (the original plus 26 images) are processed.
 
-We imagine a sphere, circumscribed over the cube (cubic cell).
-The sphere' radius is then $R_{\mathrm{circ}}=\sqrt{3}L/2$.
-The number of ions in the sphere (average) $N_{\mathrm{circ}}=N \frac{\sqrt{3}\pi}{2}$.
-We use periodic boundary conditions (PBC), therefore imagine images of ion and treat them as real ions (that's intentional).
-What function should do is for ions inside the circumscribed sphere calculate the same properties, as `inscribed`:
-$$
-u^{(\mathrm{circ})}_c = \frac{3}{5}N_{\mathrm{circ}}^{2/3},
-$$
-$$
-u^{(\mathrm{circ})}_{p\mathrm{ex}} = \frac{1}{N_{\mathrm{circ}}}\sum_{i<j}\frac{1}{r_{ij}} - u^{(\mathrm{circ})}_{c},
-$$
-$$
-u^{(\mathrm{circ})}_{b\mathrm{ex}} = \frac{1}{2}\left(\frac{1}{N_{\mathrm{circ}}}\sum_{i}r_i^2 - u^{(\mathrm{circ})}_{c}\right)
-$$
-For a cube, consider translations $(k_xL,k_yL,k_zL)$ with each $k$ in
-$\{-1,0,1\}$, including the original cell. Select only points satisfying
-$r_i^2 \le R_{\mathrm{circ}}^2$. Face and edge neighbors contribute; corner
-neighbors can contribute points exactly on the boundary. Treat every selected
-image as a distinct point, including different images of the same original ion.
-Sum over unordered pairs exactly once using direct distances, without a
-minimum-image reduction. Normalize by the unrounded geometric mean population,
-not the actual selected count.
+Multiplier 3 is rejected. Every sphere excludes points exactly on its boundary,
+including the cube corners for `c`. For `c`, squared-radius selection uses
+$3(L_{\min}/2)^2$ directly to avoid rounding the square root in the boundary test.
 
-For an orthorhombic box, the implementation uses
-$R_{\mathrm{insc}}=\min(L_x,L_y,L_z)/2$,
-$R_{\mathrm{circ}}=\sqrt{L_x^2+L_y^2+L_z^2}/2$, and mean population
-$N(4\pi R^3/3)/(L_xL_yL_z)$. Image bounds expand as necessary along each axis.
-
-An empty selected sphere with $N>0$ still has nonzero $u_c$ and returns
+Spheres are processed sequentially in the supplied order on every frame.
+Repeated multipliers are permitted and receive separate output files.
+All pair sums count each unordered pair once and use direct distances,
+without a minimum-image reduction. The reported energies are
+$$
+u_c=\frac{3}{5}N_s^{2/3},\qquad
+u_{p\mathrm{ex}}=\frac{1}{N_s}\sum_{i<j}\frac{1}{r_{ij}}-u_c,
+$$
+$$
+u_{b\mathrm{ex}}=\frac12\left(\frac{1}{N_s}\sum_i r_i^2-u_c\right).
+$$
+Normalization uses the unrounded geometric mean $N_s$; the actual selected
+count is reported separately. An empty selected sphere with $N>0$ has
 $u_{p\mathrm{ex}}=-u_c$ and $u_{b\mathrm{ex}}=-u_c/2$. The formulas assume a
 nonempty simulation ($N>0$).
 
 # Virial and pressure contribution
 
-For either sphere, write $N_s$ for its unrounded mean population and
+For each sphere, write $N_s$ for its unrounded mean population and
 $V_s=4\pi R_s^3/3$ for its volume. The density is
 $n=N_s/V_s=N/V$, where $N,V$ refer to the original simulation cell.
 
@@ -121,37 +110,55 @@ from the trajectory.
 
 # Running and output
 
-Each step writes `timestep,N,V,rmax,nbins,T` to `metadata.csv`; use
-`--meta-out path.csv` to change this filename. `observables.csv` (configurable
-with `--obs-out`) contains `timestep` and the sphere observables, so the files
-can be joined by timestep. Neither file includes `dr` or `Gamma`: `dr` is the
-constant CLI bin width, and $\Gamma=1/T$. The metadata always reports
+For example, calculate four numeric radii plus the exact circumsphere, with
+ADIOS2 defaults and $\Gamma=10$:
+
+```sh
+ocp-framework dumps/dump.bp 0.5 1 c 2 2.9 --config "" --gamma 10
+```
+
+The flags `-i` and `-c` are replaced by the positional radius list. An RDF-only
+run can omit the list; otherwise at least one sphere is required.
+
+Each sphere has its own CSV: `observables-1.csv`, `observables-2.csv`, etc.,
+numbered in request order. `--obs-out results.csv` changes the base name to
+`results-1.csv`, etc.; a base without an extension gains `.csv`.
+Every sphere file has these columns:
+
+```text
+timestep,r,Ns,Nrs,upex,ubex,uc,virial,pex,p,Z
+```
+
+`r` is the actual radius for that frame, recalculated as the box changes.
+`Ns` is the mean population, `Nrs` the actual selected count, `virial` is
+$w_s=W_s/(3N_s)$, and `pex` is the virial contribution to pressure.
+An empty selected sphere with $N>0$ has zero virial and zero excess pressure.
+
+`spheres.json` (configurable with `--spheres-out`) is a JSON array with one
+entry per sphere:
+
+```json
+[{"rfrac": 0.5, "filename": "observables-1.csv"}]
+```
+
+Here `rfrac` is the numeric multiplier. Filenames are relative to the JSON
+file's directory. The JSON contains no radius: each sphere CSV records `r`
+for every frame. Currently `r = rfrac * metadata.rmax`; `rmax` remains in
+metadata independently. The mapping is written once, including for an empty
+trajectory. An RDF-only run produces an empty JSON array.
+
+Each step also writes `timestep,N,V,rmax,nbins,T` to `metadata.csv`; use
+`--meta-out path.csv` to change this filename. The files can be joined by
+timestep. Neither metadata nor sphere files include `dr` or `Gamma`: `dr` is
+the constant CLI bin width, and $\Gamma=1/T$. The metadata always reports
 `rmax = 0.5 * min(Lx,Ly,Lz)`; `nbins` is zero when RDF calculation is disabled.
-
-Use `-i` for the inscribed sphere and `-c` for the circumscribed sphere;
-the options can be combined. `Ni` and `Nc` in `observables.csv` are mean
-populations, while `Nri` and `Nrc` are actual selected counts. The circumscribed
-outputs are appended as `Nc,Nrc,upexc,ubexc,ucc`.
-
-The additional columns `viriali,pexi,virialc,pexc` report $w_s$ and
-$p_{\mathrm{ex},s}$ for the inscribed and circumscribed spheres respectively.
-They are calculated automatically with `-i` and `-c`. A disabled sphere has
-`nan` in these columns; an empty selected sphere with $N>0$ has zero virial
-and zero excess pressure.
 
 The optional `--gamma Gamma` argument must be finite and positive, with a
 representable finite positive reciprocal. The inferred temperature `T` is
-written to the metadata file; `pi,Zi,pc,Zc` in the observables file contain
-total pressure and compressibility factor for each sphere. Without `--gamma`,
-these values contain `nan`; pressure and compressibility also contain `nan` for a
-disabled sphere. The existing virial and excess-pressure columns are independent
-of `--gamma`. Zero virial gives $p_s=nT$ and $Z_{\mathrm{ion},s}=1$.
-
-For example, using ADIOS2 defaults and $\Gamma=10$:
-
-```sh
-ocp-framework dumps/dump.bp --config "" -i -c --gamma 10
-```
+written to the metadata file; `p,Z` in each sphere file contain total pressure
+and compressibility factor. Without `--gamma`, these values contain `nan`.
+Virial and excess pressure are independent of `--gamma`. Zero virial gives
+$p_s=nT$ and $Z_{\mathrm{ion},s}=1$.
 
 `--rdf dr` produces per-ion pair counts in radial bins of width `dr`, using
 minimum-image distances. Distances at or above `rmax` are excluded, including

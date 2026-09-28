@@ -18,13 +18,19 @@
 
 using size_t = std::size_t;
 
+struct SphereSpec {
+  double rfrac;
+  bool exact_circumscribed = false;    // c: use 3*(L_min/2)^2 for the boundary test
+};
+
 struct Options {
   Options(int argc, char** argv)
   {
-    const std::string usage = "Usage: ocp-framework <file.bp> [--config adios2_config.xml] [--io read_dump]\n"
+    const std::string usage = "Usage: ocp-framework <file.bp> [rfrac ...] [--config adios2_config.xml] [--io read_dump]\n"
                               "                              [--obs-out observables.csv] [--rdf-out rdf.csv]\n"
                               "                              [--meta-out metadata.csv] [--rdf dr]\n"
-                              "                              [-i] [-c] [--gamma Gamma]\n";
+                              "                              [--spheres-out spheres.json] [--gamma Gamma]\n"
+                              "  rfrac: multiplier in (0,3), or c for sqrt(3)\n";
     if (argc < 2) { throw std::runtime_error(usage); }
     const std::string firstarg = argv[1];
     if ((firstarg == "--help") || (firstarg == "-h")) { throw std::runtime_error(usage); }
@@ -47,10 +53,8 @@ struct Options {
         rdf_out = need_value(argc, argv, i);
       } else if (a == "--meta-out") {
         metadata_out = need_value(argc, argv, i);
-      } else if (a == "-i") {
-        calculate_inscribed = true;
-      } else if (a == "-c") {
-        calculate_circumscribed = true;
+      } else if (a == "--spheres-out") {
+        spheres_out = need_value(argc, argv, i);
       } else if (a == "--gamma") {
         const auto value  = need_value(argc, argv, i);
         const char* error = "--gamma must be finite and > 0, with a finite positive 1/Gamma";
@@ -63,26 +67,40 @@ struct Options {
         if (consumed != value.size() || !std::isfinite(gamma) || gamma <= 0.0 || !std::isfinite(1.0 / gamma) || 1.0 / gamma <= 0.0) {
           throw std::runtime_error(error);
         }
-      } else {
+      } else if (a == "c") {
+        spheres.push_back({std::sqrt(3.0), true});
+      } else if (a.starts_with("-")) {
         throw std::runtime_error("Unknown argument: " + a);
+      } else {
+        const char* error = "Sphere multiplier must be finite and in (0,3), or c";
+        size_t consumed   = 0;
+        double rfrac;
+        try {
+          rfrac = std::stod(a, &consumed);
+        } catch (const std::logic_error&) {
+          throw std::runtime_error(error);
+        }
+        if (consumed != a.size() || !std::isfinite(rfrac) || rfrac <= 0.0 || rfrac >= 3.0) { throw std::runtime_error(error); }
+        spheres.push_back({rfrac});
       }
     }
+    if (!calculate_rdf && spheres.empty()) { throw std::runtime_error("Need at least one sphere or --rdf specified."); }
   }
 
   double dr    = -1.0;
   double gamma = std::numeric_limits<double>::quiet_NaN();
 
   std::string bpFile;
-  std::string adiosConfig      = "adios2_config.xml";
-  std::string ioName           = "read_dump";
+  std::string adiosConfig  = "adios2_config.xml";
+  std::string ioName       = "read_dump";
 
-  std::string csv_out          = "observables.csv";
-  std::string rdf_out          = "rdf.csv";
-  std::string metadata_out     = "metadata.csv";
+  std::string csv_out      = "observables.csv";
+  std::string rdf_out      = "rdf.csv";
+  std::string metadata_out = "metadata.csv";
+  std::string spheres_out  = "spheres.json";
+  std::vector<SphereSpec> spheres;
 
-  bool calculate_rdf           = false;
-  bool calculate_inscribed     = false;
-  bool calculate_circumscribed = false;
+  bool calculate_rdf = false;
 
   [[nodiscard]] static std::string need_value(int argc, const char* const* const argv, int& i)
   {
@@ -114,6 +132,16 @@ struct SphereVirial {
   double compressibility = std::numeric_limits<double>::quiet_NaN();
 };
 
+struct Sphere {
+  SphereSpec spec;
+  std::string filename;
+  std::ofstream out_csv;
+  double radius{}, radius_squared{}, mean_population{};
+  size_t count{};
+  double upex{}, ubex{}, uc{};
+  SphereVirial virial;
+};
+
 struct Application {
   explicit Application(const Options& opt);
   Application(const Application&) = delete;
@@ -129,21 +157,19 @@ struct Application {
   void calculate();
   void write();
   void compute_rdf_celllist();
-  void inscribed();
-  void circumscribed();
+  void inscribed(Sphere& sphere);
+  void circumscribed(Sphere& sphere);
+  void write_sphere_index();
 
   adios2::ADIOS adios;
   adios2::IO io;
   adios2::Engine reader;
   int32_t scaled    = 0;    // 0 if coordinates are dimensional (real); 1 if dimensionless — x->x/Lx, y->y/Ly, z->z/Lz
   int32_t triclinic = 0;
-  std::ofstream out_csv;
   std::ofstream out_rdf;
   std::ofstream out_meta;
 
-  bool calculate_rdf           = false;
-  bool calculate_inscribed     = false;
-  bool calculate_circumscribed = false;
+  bool calculate_rdf = false;
 
   adios2::Variable<double> vAtoms;
   adios2::Variable<uint64_t> vNt;
@@ -169,17 +195,8 @@ struct Application {
   size_t nbins = 0;         // number of bins for rdf
   double dr    = 0;         // bin width
 
-  double Ni    = 0;    // mean population of inscribed sphere, calculated from geometry
-  size_t Nri   = 0;    // number of atoms inside inscribed sphere, counted from data
-  double upexi = 0;    // energies for inscribed sphere
-  double ubexi = 0;    // energies for inscribed sphere
-  double uci   = 0;    // energies for inscribed sphere
-  double Nc    = 0;    // mean population of circumscribed sphere, calculated from geometry
-  size_t Nrc   = 0;    // number of atoms and images inside circumscribed sphere
-  double upexc = 0;
-  double ubexc = 0;
-  double ucc   = 0;
-  SphereVirial viriali, virialc;
+  std::vector<Sphere> spheres;
+  std::string spheres_out;
   double gamma = std::numeric_limits<double>::quiet_NaN();
 };
 

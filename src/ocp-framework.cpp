@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -17,9 +18,31 @@
 #include <numbers>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
+  // JSON filenames may contain quotes, backslashes, and control characters.
+  [[nodiscard]] std::string json_string(const std::string& value)
+  {
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result   = "\"";
+    for (const unsigned char c : value) {
+      if (c == '"' || c == '\\') {
+        result += '\\';
+        result += static_cast<char>(c);
+      } else if (c < 0x20) {
+        result += "\\u00";
+        result += hex[c >> 4];
+        result += hex[c & 15];
+      } else {
+        result += static_cast<char>(c);
+      }
+    }
+    result += '"';
+    return result;
+  }
+
   [[nodiscard]] inline double min_image(double dx, double L)
   {
     // nearest integer multiple
@@ -62,21 +85,25 @@ namespace {
 }    // namespace
 
 Application::Application(const Options& options) :
-    adios(adios2::ADIOS(options.adiosConfig)), calculate_rdf(options.calculate_rdf), calculate_inscribed(options.calculate_inscribed),
-    calculate_circumscribed(options.calculate_circumscribed), dr(options.dr), gamma(options.gamma)
+    adios(adios2::ADIOS(options.adiosConfig)), calculate_rdf(options.calculate_rdf), dr(options.dr), spheres_out(options.spheres_out),
+    gamma(options.gamma)
 {
-  io = adios.DeclareIO(options.ioName);
+  io     = adios.DeclareIO(options.ioName);
+  reader = io.Open(options.bpFile, adios2::Mode::Read);
 
-  if (!(calculate_rdf || calculate_inscribed || calculate_circumscribed)) { throw std::runtime_error("Need at least one calculation specified."); }
-
-  // Read file
-  reader  = io.Open(options.bpFile, adios2::Mode::Read);
-
-  // Output files
-  out_csv = std::ofstream(options.csv_out);
-  if (!out_csv) { throw std::runtime_error("Cannot open " + options.csv_out); }
-  out_csv << std::setprecision(std::numeric_limits<double>::max_digits10);
-  out_csv << "timestep,Ni,Nri,upexi,ubexi,uci,Nc,Nrc,upexc,ubexc,ucc,viriali,pexi,virialc,pexc,pi,Zi,pc,Zc\n";
+  // Numbered filenames preserve request order, including repeated multipliers.
+  const std::filesystem::path base(options.csv_out);
+  const std::string extension = base.has_extension() ? base.extension().string() : ".csv";
+  for (const auto& spec : options.spheres) {
+    Sphere sphere{.spec = spec};
+    sphere.filename = (base.parent_path() / (base.stem().string() + "-" + std::to_string(spheres.size() + 1) + extension)).string();
+    sphere.out_csv.open(sphere.filename);
+    if (!sphere.out_csv) { throw std::runtime_error("Cannot open " + sphere.filename); }
+    sphere.out_csv << std::setprecision(std::numeric_limits<double>::max_digits10);
+    sphere.out_csv << "timestep,r,Ns,Nrs,upex,ubex,uc,virial,pex,p,Z\n";
+    spheres.push_back(std::move(sphere));
+  }
+  write_sphere_index();
 
   out_meta = std::ofstream(options.metadata_out);
   if (!out_meta) { throw std::runtime_error("Cannot open " + options.metadata_out); }
@@ -175,51 +202,39 @@ void Application::modify_data()
   }
 }
 
-void Application::inscribed()
+void Application::inscribed(Sphere& sphere)
 {
-  const double radius = 0.5 * box.L_min;
-  const double Rsq    = radius * radius;
-  Ni                  = N_in_sphere(N, box, radius);
-
-  upexi               = 0;
-  ubexi               = 0;
+  const double Rsq = sphere.radius_squared;
 
   idlist.reserve(N);
   idlist.clear();
   for (size_t i = 0; i < N; ++i) {
-    if (sr[i] <= Rsq) {
-      ubexi += sr[i];
+    if (sr[i] < Rsq) {
+      sphere.ubex += sr[i];
       idlist.emplace_back(i);
     }
   }
-  Nri = idlist.size();
+  sphere.count = idlist.size();
 
-  for (size_t i = 0; i < Nri; ++i) {
+  for (size_t i = 0; i < sphere.count; ++i) {
     const auto ii   = idlist[i];
     const double xi = x[ii];
     const double yi = y[ii];
     const double zi = z[ii];
-    for (size_t j = i + 1; j < Nri; ++j) {
+    for (size_t j = i + 1; j < sphere.count; ++j) {
       const auto jj    = idlist[j];
       const double dx  = xi - x[jj];
       const double dy  = yi - y[jj];
       const double dz  = zi - z[jj];
       const double rij = std::sqrt(dx * dx + dy * dy + dz * dz);
-      upexi += 1.0 / rij;
+      sphere.upex += 1.0 / rij;
     }
   }
-
-  viriali = sphere_virial(Ni, upexi, ubexi, static_cast<double>(N) / box.V, gamma);
-  normalize_sphere(Ni, upexi, ubexi, uci);
 }
 
-void Application::circumscribed()
+void Application::circumscribed(Sphere& sphere)
 {
-  const double Rsq    = 0.25 * (box.Lx * box.Lx + box.Ly * box.Ly + box.Lz * box.Lz);
-  const double radius = std::sqrt(Rsq);
-  Nc                  = N_in_sphere(N, box, radius);
-  upexc               = 0.0;
-  ubexc               = 0.0;
+  const double Rsq = sphere.radius_squared;
 
   struct Point {
     double x, y, z;
@@ -227,39 +242,33 @@ void Application::circumscribed()
   std::vector<Point> points;
   points.reserve(N);
 
-  // An image at shift k can intersect the sphere only if
-  // (|k| - 1/2) L <= radius. For cubes this gives shifts -1, 0, 1.
-  const int nx = static_cast<int>(std::floor(radius / box.Lx + 0.5));
-  const int ny = static_cast<int>(std::floor(radius / box.Ly + 0.5));
-  const int nz = static_cast<int>(std::floor(radius / box.Lz + 0.5));
-  for (int ix = -nx; ix <= nx; ++ix) {
-    for (int iy = -ny; iy <= ny; ++iy) {
-      for (int iz = -nz; iz <= nz; ++iz) {
+  // rfrac < 3 and a strict sphere boundary require at most the 26 neighboring cells.
+  for (int ix = -1; ix <= 1; ++ix) {
+    for (int iy = -1; iy <= 1; ++iy) {
+      for (int iz = -1; iz <= 1; ++iz) {
         for (size_t i = 0; i < N; ++i) {
           const Point p{.x = x[i] + ix * box.Lx, .y = y[i] + iy * box.Ly, .z = z[i] + iz * box.Lz};
           const double rsq = p.x * p.x + p.y * p.y + p.z * p.z;
-          if (rsq <= Rsq) {
+          if (rsq < Rsq) {
             points.push_back(p);
-            ubexc += rsq;
+            sphere.ubex += rsq;
           }
         }
       }
     }
   }
-  Nrc = points.size();
+  sphere.count = points.size();
 
   // Every selected image is a distinct point, including images of the same
   // original ion. Use direct distances, without a minimum-image reduction.
-  for (size_t i = 0; i < Nrc; ++i) {
-    for (size_t j = i + 1; j < Nrc; ++j) {
+  for (size_t i = 0; i < sphere.count; ++i) {
+    for (size_t j = i + 1; j < sphere.count; ++j) {
       const double dx = points[i].x - points[j].x;
       const double dy = points[i].y - points[j].y;
       const double dz = points[i].z - points[j].z;
-      upexc += 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
+      sphere.upex += 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz);
     }
   }
-  virialc = sphere_virial(Nc, upexc, ubexc, static_cast<double>(N) / box.V, gamma);
-  normalize_sphere(Nc, upexc, ubexc, ucc);
 }
 
 void Application::calculate()
@@ -267,24 +276,52 @@ void Application::calculate()
   rmax = 0.5 * box.L_min;
   if (calculate_rdf) { compute_rdf_celllist(); }
 
-  if (calculate_inscribed) { inscribed(); }
-  if (calculate_circumscribed) { circumscribed(); }
+  for (auto& sphere : spheres) {
+    sphere.radius          = sphere.spec.rfrac * rmax;
+    sphere.radius_squared  = sphere.spec.exact_circumscribed ? 3.0 * (rmax * rmax) : sphere.radius * sphere.radius;
+    sphere.mean_population = N_in_sphere(N, box, sphere.radius);
+    sphere.upex = sphere.ubex = 0.0;
+    if (sphere.spec.rfrac <= 1.0) {
+      inscribed(sphere);
+    } else {
+      circumscribed(sphere);
+    }
+    sphere.virial = sphere_virial(sphere.mean_population, sphere.upex, sphere.ubex, static_cast<double>(N) / box.V, gamma);
+    normalize_sphere(sphere.mean_population, sphere.upex, sphere.ubex, sphere.uc);
+  }
 }
 
 void Application::write()
 {
   out_meta << timestep << "," << N << "," << box.V << "," << rmax << "," << nbins << "," << 1.0 / gamma << "\n";
   out_meta.flush();
-  out_csv << timestep << "," << Ni << "," << Nri << "," << upexi << "," << ubexi << "," << uci << "," << Nc << "," << Nrc << "," << upexc << ","
-          << ubexc << "," << ucc << "," << viriali.virial << "," << viriali.excess_pressure << "," << virialc.virial << "," << virialc.excess_pressure
-          << "," << viriali.pressure << "," << viriali.compressibility << "," << virialc.pressure << "," << virialc.compressibility << "\n";
-  out_csv.flush();
+  for (auto& sphere : spheres) {
+    sphere.out_csv << timestep << "," << sphere.radius << "," << sphere.mean_population << "," << sphere.count << "," << sphere.upex << ","
+                   << sphere.ubex << "," << sphere.uc << "," << sphere.virial.virial << "," << sphere.virial.excess_pressure << ","
+                   << sphere.virial.pressure << "," << sphere.virial.compressibility << "\n";
+    sphere.out_csv.flush();
+  }
   if (calculate_rdf) {
     out_rdf << timestep;
     for (size_t i = 0; i < nbins; ++i) { out_rdf << "," << counts[i]; }
     out_rdf << "\n";
     out_rdf.flush();
   }
+}
+
+void Application::write_sphere_index()
+{
+  std::ofstream index(spheres_out);
+  if (!index) { throw std::runtime_error("Cannot open " + spheres_out); }
+  index << std::setprecision(std::numeric_limits<double>::max_digits10) << "[\n";
+  const auto directory = std::filesystem::absolute(spheres_out).parent_path().lexically_normal();
+  for (size_t i = 0; i < spheres.size(); ++i) {
+    const auto& sphere  = spheres[i];
+    const auto filename = std::filesystem::absolute(sphere.filename).lexically_normal().lexically_relative(directory).generic_string();
+    index << "  {\"rfrac\": " << sphere.spec.rfrac << ", \"filename\": " << json_string(filename) << "}";
+    index << (i + 1 == spheres.size() ? "\n" : ",\n");
+  }
+  index << "]\n";
 }
 
 void Application::run()
@@ -325,7 +362,7 @@ void Application::compute_rdf_celllist()
 
 Application::~Application()
 {
-  out_csv.close();
+  for (auto& sphere : spheres) { sphere.out_csv.close(); }
   out_meta.close();
   if (calculate_rdf) { out_rdf.close(); }
   reader.Close();

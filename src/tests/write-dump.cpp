@@ -7,13 +7,15 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 // Input: scaled, lengths[3], center[3], then frames of N followed by N xyz triples.
 int main(int argc, char** argv)
 {
-  if (argc != 2) { return 1; }
-  int32_t scaled = 0;
+  if (argc != 2 && argc != 3) { return 1; }
+  const bool vary_box = argc == 3 && std::string(argv[2]) == "--vary-box";
+  int32_t scaled      = 0;
   std::array<double, 3> lengths{}, center{};
   std::cin >> scaled;
   for (auto& value : lengths) { std::cin >> value; }
@@ -34,6 +36,9 @@ int main(int argc, char** argv)
   auto writer = io.Open(argv[1], adios2::Mode::Write);
   uint64_t n{}, step = 0;
   while (std::cin >> n) {
+    if (vary_box) {
+      for (auto& length : lengths) { std::cin >> length; }
+    }
     std::vector<double> data(n * 5);
     for (size_t i = 0; i < n; ++i) {
       data[5 * i]     = i + 1;
